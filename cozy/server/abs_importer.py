@@ -2,6 +2,7 @@ import logging
 import time
 from typing import Callable, Optional
 
+import requests
 from peewee import DoesNotExist
 
 from cozy.db.abs_server import AudiobookshelfBook, AudiobookshelfServer
@@ -10,6 +11,7 @@ from cozy.db.file import File
 from cozy.db.offline_cache import OfflineCache as OfflineCacheModel
 from cozy.db.track import Track
 from cozy.db.track_to_file import TrackToFile
+from cozy.server.audiobookshelf_client import AudiobookshelfError
 
 log = logging.getLogger("abs_importer")
 
@@ -26,6 +28,7 @@ class SyncResult:
         self.removed = 0
         self.changed_books: list[int] = []
         self.removed_cached_files: list[str] = []
+        self.failed_items: list[str] = []
 
     @property
     def total(self) -> int:
@@ -59,8 +62,16 @@ class AbsImporter:
                 continue
 
             time.sleep(PAUSE_BETWEEN_ITEMS)
-            detail = self._client.get_item(item_id)
-            files_changed, removed_cached_files = self._import_item(detail, progress)
+
+            try:
+                detail = self._client.get_item(item_id)
+                files_changed, removed_cached_files = self._import_item(detail, progress)
+            except (AudiobookshelfError, requests.RequestException) as e:
+                log.warning("Skipping item %s: %s", item_id, e)
+                result.failed_items.append(self._item_name(item, item_id))
+                seen_item_ids.add(item_id)
+                continue
+
             result.removed_cached_files.extend(removed_cached_files)
 
             seen_item_ids.add(item_id)
@@ -74,6 +85,11 @@ class AbsImporter:
         result.removed = self._remove_departed_books(seen_item_ids)
 
         return result
+
+    @staticmethod
+    def _item_name(item: dict, item_id: str) -> str:
+        metadata = (item.get("media") or {}).get("metadata") or {}
+        return metadata.get("title") or item_id
 
     def _import_item(self, item: dict, progress: dict = None) -> tuple[bool, list[str]]:
         item_id = item["id"]

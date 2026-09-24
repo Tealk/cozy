@@ -81,6 +81,12 @@ class AbsServers(Adw.PreferencesGroup):
             self._toast.show(
                 _("Synced {count} books from {name}").format(count=count, name=server.name)
             )
+            if result.failed_items:
+                self._toast.show(
+                    _("Could not sync {count} books: {books}").format(
+                        count=len(result.failed_items), books=", ".join(result.failed_items[:3])
+                    )
+                )
             self._reload()
         elif event == "sync-failed":
             self._toast.show(_("Synchronization failed: ") + message)

@@ -7,6 +7,7 @@ from cozy.db.offline_cache import OfflineCache as OfflineCacheModel
 from cozy.db.track import Track
 from cozy.db.track_to_file import TrackToFile
 from cozy.server.abs_importer import AbsImporter
+from cozy.server.audiobookshelf_client import AudiobookshelfError
 
 BASE_URL = "http://abs.local:13378"
 
@@ -354,3 +355,40 @@ def test_sync_reports_removed_cached_files(server):
         OfflineCacheModel.cached_file == "cached-2"
     ).exists()
     assert not File.select().where(File.path == BASE_URL + "/s/item/li_1/02-book.mp3").exists()
+
+
+def test_sync_skips_items_that_fail(server):
+    class FailingClient(FakeClient):
+        def get_item(self, item_id):
+            if item_id == "li_1":
+                raise AudiobookshelfError("status 503")
+
+            return super().get_item(item_id)
+
+    other_item = {
+        **ITEM,
+        "id": "li_2",
+        "updatedAt": 700,
+        "media": {**ITEM["media"], "metadata": {**ITEM["media"]["metadata"], "title": "Second"}},
+    }
+    client = FailingClient([ITEM, other_item], details={"li_2": other_item})
+
+    result = AbsImporter(client, server).sync()
+
+    assert result.failed_items == ["The Book"]
+    assert result.created == 1
+    assert AudiobookshelfBook.select().count() == 1
+    assert AudiobookshelfBook.get().book.name == "Second"
+
+
+def test_sync_uses_item_id_when_title_is_missing(server):
+    class FailingClient(FakeClient):
+        def get_item(self, item_id):
+            raise AudiobookshelfError("status 500")
+
+    item_without_title = {**ITEM, "media": {"metadata": {}, "audioTracks": []}}
+    client = FailingClient([item_without_title], details={})
+
+    result = AbsImporter(client, server).sync()
+
+    assert result.failed_items == ["li_1"]

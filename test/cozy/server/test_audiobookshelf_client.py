@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from cozy.server.audiobookshelf_client import (
     AudiobookshelfClient,
@@ -8,10 +9,13 @@ from cozy.server.audiobookshelf_client import (
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, payload=None, content: bytes = b"", text: str = ""):
+    def __init__(
+        self, status_code: int, payload=None, content: bytes = b"", text: str = "", headers=None
+    ):
         self.status_code = status_code
         self._payload = payload
         self.content = content
+        self.headers = headers or {}
         self.text = text or ("" if payload is None else str(payload))
 
     def json(self):
@@ -185,9 +189,100 @@ def test_post_progress_non_json_response_body():
     client.post_progress("li_1", current_time=100.0, duration=600.0)
 
 
-def test_raises_on_server_error():
-    session = FakeSession([FakeResponse(500, {"error": "boom"})])
+def test_raises_on_server_error(no_sleep):
+    session = FakeSession([FakeResponse(500, {"error": "boom"}) for _ in range(3)])
     client = make_client(session)
 
     with pytest.raises(AudiobookshelfError):
         client.get_libraries()
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    slept = []
+    monkeypatch.setattr(
+        "cozy.server.audiobookshelf_client.time.sleep", lambda seconds: slept.append(seconds)
+    )
+    return slept
+
+
+def test_retries_on_server_error(no_sleep):
+    session = FakeSession([FakeResponse(503, {}), FakeResponse(200, {"libraries": []})])
+    client = make_client(session)
+
+    assert client.get_libraries() == []
+    assert len(session.requests) == 2
+    assert len(no_sleep) == 1
+
+
+def test_retries_on_rate_limit_and_honors_retry_after(no_sleep):
+    session = FakeSession(
+        [FakeResponse(429, {}, headers={"Retry-After": "7"}), FakeResponse(200, {"libraries": []})]
+    )
+    client = make_client(session)
+
+    assert client.get_libraries() == []
+    assert no_sleep == [7.0]
+
+
+def test_raises_after_max_attempts(no_sleep):
+    session = FakeSession([FakeResponse(500, {"error": "boom"}) for _ in range(3)])
+    client = make_client(session)
+
+    with pytest.raises(AudiobookshelfError):
+        client.get_libraries()
+
+    assert len(session.requests) == 3
+    assert len(no_sleep) == 2
+
+
+def test_does_not_retry_on_client_error(no_sleep):
+    session = FakeSession([FakeResponse(404, {"error": "nope"})])
+    client = make_client(session)
+
+    with pytest.raises(AudiobookshelfError):
+        client.get_item("li_1")
+
+    assert len(session.requests) == 1
+    assert no_sleep == []
+
+
+def test_retries_on_request_exception(no_sleep):
+    class FlakySession:
+        def __init__(self):
+            self.headers = {}
+            self.calls = 0
+
+        def request(self, method, url, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise requests.ConnectionError("boom")
+
+            return FakeResponse(200, {"libraries": []})
+
+    session = FlakySession()
+    client = make_client(session)
+
+    assert client.get_libraries() == []
+    assert session.calls == 2
+    assert len(no_sleep) == 1
+
+
+def test_raises_when_all_attempts_fail_with_request_exception(no_sleep):
+    class BrokenSession:
+        def __init__(self):
+            self.headers = {}
+            self.calls = 0
+
+        def request(self, method, url, **kwargs):
+            self.calls += 1
+            raise requests.ConnectionError("boom")
+
+    session = BrokenSession()
+    client = make_client(session)
+
+    with pytest.raises(AudiobookshelfError):
+        client.get_libraries()
+
+    assert session.calls == 3
+    assert len(no_sleep) == 2

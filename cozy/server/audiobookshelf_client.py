@@ -1,4 +1,6 @@
 import logging
+import random
+import time
 from typing import Optional
 
 import requests
@@ -12,6 +14,10 @@ LIBRARY_ITEMS_PATH = "/api/libraries/{library_id}/items"
 ITEM_PATH = "/api/items/{item_id}"
 ITEM_COVER_PATH = "/api/items/{item_id}/cover"
 ME_PROGRESS_PATH = "/api/me/progress/{item_id}"
+
+MAX_ATTEMPTS = 3
+RETRY_BACKOFF = (1.0, 2.0, 4.0)
+RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 
 
 class AudiobookshelfError(Exception):
@@ -117,9 +123,35 @@ class AudiobookshelfClient:
             headers["Authorization"] = f"Bearer {self.token}"
         kwargs["headers"] = headers
 
-        response = self._session.request(method, self.base_url + path, **kwargs)
+        url = self.base_url + path
+        response = None
 
-        error = f"{method} {self.base_url + path}: "
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                response = self._session.request(method, url, **kwargs)
+            except requests.RequestException as e:
+                if attempt == MAX_ATTEMPTS:
+                    raise AudiobookshelfError(
+                        f"{method} {url}: request failed after {attempt} attempts: {e}"
+                    ) from e
+
+                self._wait_before_retry(method, url, attempt, str(e))
+                continue
+
+            if response.status_code not in RETRY_STATUS_CODES or attempt == MAX_ATTEMPTS:
+                break
+
+            log.warning(
+                "%s %s: status %s, retry %d of %d",
+                method,
+                url,
+                response.status_code,
+                attempt,
+                MAX_ATTEMPTS,
+            )
+            self._wait_before_retry(method, url, attempt, response.headers.get("Retry-After"))
+
+        error = f"{method} {url}: "
         if response.status_code in (401, 403):
             raise AuthenticationError(
                 error + f"Authentication failed with status {response.status_code}: "
@@ -132,6 +164,22 @@ class AudiobookshelfClient:
             )
 
         return response
+
+    def _wait_before_retry(self, method: str, url: str, attempt: int, retry_after) -> None:
+        delay = self._retry_delay(attempt, retry_after)
+        log.info("%s %s: retrying in %.1f seconds", method, url, delay)
+        time.sleep(delay)
+
+    @staticmethod
+    def _retry_delay(attempt: int, retry_after=None) -> float:
+        if retry_after:
+            try:
+                return max(float(retry_after), 0.0)
+            except (TypeError, ValueError):
+                pass
+
+        backoff = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF)) - 1]
+        return backoff + random.uniform(0, 0.5)
 
     @staticmethod
     def _error_body(response: requests.Response) -> str:
