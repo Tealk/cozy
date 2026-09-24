@@ -16,7 +16,7 @@ def progress_in_seconds(book) -> tuple[float, float]:
     return current_time, duration
 
 
-def push_book_progress(book) -> None:
+def push_book_progress(book, background: bool = True) -> None:
     if book is None:
         return
 
@@ -38,15 +38,16 @@ def push_book_progress(book) -> None:
         log.warning("ABS progress: no token available: %s", e)
         return
 
-    def _send():
+    def send():
         try:
             AudiobookshelfClient(server.url, token=token).post_progress(
-                mapping.library_item_id,
-                current_time,
-                duration,
-                is_finished=book.position == -1,
+                mapping.library_item_id, current_time, duration, is_finished=book.position == -1
             )
         except Exception as e:
             log.warning("Could not push progress to ABS: %s", e)
 
-    threading.Thread(target=_send, name="AbsProgressSync", daemon=True).start()
+    if not background:
+        send()
+        return
+
+    threading.Thread(target=send, name="AbsProgressSync", daemon=True).start()

@@ -15,6 +15,7 @@ from cozy.media.importer import Importer, ScanStatus
 from cozy.media.player import Player
 from cozy.model.library import Library
 from cozy.model.settings import Settings as SettingsModel
+from cozy.server.abs_progress import push_book_progress
 from cozy.settings import ApplicationSettings
 from cozy.ui.about_window import AboutWindow
 from cozy.ui.book_detail_view import BookDetailView
@@ -322,6 +323,7 @@ class CozyUI(EventSender, metaclass=Singleton):
         Close and dispose everything that needs to be when window is closed.
         """
         log.info("Releasing resources.")
+        push_book_progress(self._player.loaded_book, background=False)
         self.fs_monitor.close()
         self._save_window_size()
         self._player.destroy()
