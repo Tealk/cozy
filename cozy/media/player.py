@@ -14,6 +14,8 @@ from cozy.model.book import Book
 from cozy.model.chapter import Chapter
 from cozy.model.library import Library
 from cozy.report import reporter
+from cozy.server.abs_progress import push_book_progress
+from cozy.server.playback import is_remote_file, resolve_playback_uri
 from cozy.settings import ApplicationSettings
 from cozy.tools import IntervalTimer
 from cozy.ui.file_not_found_dialog import FileNotFoundDialog
@@ -160,12 +162,16 @@ class GstPlayer(EventSender):
         self._player.set_property("mute", False)
 
     def load_file(self, path: str):
-        if not Path(path).exists():
-            raise FileNotFoundError()
+        if is_remote_file(path):
+            uri = resolve_playback_uri(path)
+        else:
+            if not Path(path).exists():
+                raise FileNotFoundError()
+            uri = "file://" + quote(path)
 
         self._player.set_state(Gst.State.NULL)
         self._playback_speed = 1.0
-        self._player.set_property("uri", "file://" + quote(path))
+        self._player.set_property("uri", uri)
         self._player.set_state(Gst.State.PAUSED)
 
     def play(self):
@@ -288,7 +294,7 @@ class GstPlayer(EventSender):
     def _on_gst_message(self, _, message: Gst.Message):
         t = message.type
         if t == Gst.MessageType.BUFFERING:
-            if message.percentage < 100:
+            if message.parse_buffering() < 100:
                 self._player.set_state(Gst.State.PAUSED)
                 log.info("Buffering…")
             else:
@@ -349,6 +355,7 @@ class Player(EventSender):
 
         self._book: Optional[Book] = None
         self._play_next_chapter: bool = True
+        self._last_abs_progress_push: float = 0
 
         self.add_listener(PowerManager()._on_player_changed)
         self._importer.add_listener(self._on_importer_event)
@@ -513,7 +520,9 @@ class Player(EventSender):
         self._library.last_played_book = self._book
         media_file_path = self._get_playback_path(chapter)
 
-        if self._gst_player.loaded_file_path == media_file_path:
+        if self._gst_player.loaded_file_path and self._same_file(
+            self._gst_player.loaded_file_path, media_file_path
+        ):
             log.info("Not loading a new file because the new chapter is within the old file.")
         else:
             log.info("Loading new file for chapter.")
@@ -531,6 +540,10 @@ class Player(EventSender):
         if file_changed or self._book.position != chapter.id:
             self._book.position = chapter.id
             self.emit_event_main_thread("chapter-changed", self._book)
+
+    @staticmethod
+    def _same_file(loaded_path: str, requested_path: str) -> bool:
+        return loaded_path.split("?", 1)[0] == requested_path.split("?", 1)[0]
 
     def _get_playback_path(self, chapter: Chapter):
         if self._book.offline and self._book.downloaded:
@@ -661,6 +674,7 @@ class Player(EventSender):
             self.emit_event_main_thread("play", self._book)
         elif event == "state" and message == Gst.State.PAUSED:
             self._stop_tick_thread()
+            push_book_progress(self._book)
             self.emit_event_main_thread("pause")
         elif event == "state" and message == Gst.State.READY:
             self._stop_playback()
@@ -683,6 +697,7 @@ class Player(EventSender):
 
     def _stop_playback(self):
         self._stop_tick_thread()
+        push_book_progress(self._book)
         self._book = None
         self.emit_event_main_thread("pause")
         self.emit_event_main_thread("stop")
@@ -690,6 +705,7 @@ class Player(EventSender):
     def _finish_book(self):
         if self._book:
             self._book.position = -1
+            push_book_progress(self._book)
             self._library.last_played_book = None
 
         self.emit_event_main_thread("book-finished", self._book)
@@ -720,6 +736,11 @@ class Player(EventSender):
             self.emit_event_main_thread("position", position_for_ui)
         except Exception as e:
             log.warning("Could not emit position event: %s", e)
+
+        now = time.monotonic()
+        if now - self._last_abs_progress_push >= 15:
+            self._last_abs_progress_push = now
+            push_book_progress(self._book)
 
     def _should_jump_to_chapter_position(self, position: int) -> bool:
         """

@@ -183,6 +183,13 @@ class LibraryViewModel(Observable, EventSender):
     def open_library(self):
         self._notify("library_view_mode")
 
+    def refresh_books(self):
+        self._model.invalidate()
+        self._notify("authors")
+        self._notify("readers")
+        self._notify("books")
+        self._notify("books-filter")
+
     def book_files_exist(self, book: Book) -> bool:
         return any(os.path.isfile(chapter.file) for chapter in book.chapters)
 

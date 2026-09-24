@@ -1,6 +1,7 @@
 import inject
 from gi.repository import Adw, Gio, Gtk
 
+from cozy.ui.widgets.abs import AbsServers
 from cozy.ui.widgets.error_reporting import ErrorReporting
 from cozy.ui.widgets.storages import StorageLocations
 from cozy.view_model.settings_view_model import SettingsViewModel
@@ -14,6 +15,7 @@ class PreferencesWindow(Adw.PreferencesDialog):
     _view_model: SettingsViewModel = inject.attr(SettingsViewModel)
 
     storages_page: Adw.PreferencesPage = Gtk.Template.Child()
+    abs_page: Adw.PreferencesPage = Gtk.Template.Child()
     user_feedback_preference_group: Adw.PreferencesGroup = Gtk.Template.Child()
 
     swap_author_reader_switch: Adw.SwitchRow = Gtk.Template.Child()
@@ -31,6 +33,9 @@ class PreferencesWindow(Adw.PreferencesDialog):
 
         self.storage_locations_view = StorageLocations()
         self.storages_page.add(self.storage_locations_view)
+
+        self.abs_servers_view = AbsServers()
+        self.abs_page.add(self.abs_servers_view)
 
         self._view_model.bind_to("lock_ui", self._on_lock_ui_changed)
         self._bind_settings()

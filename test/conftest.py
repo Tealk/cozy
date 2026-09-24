@@ -18,6 +18,13 @@ def install_l10n():
     trans.install('gettext')
 
 
+@pytest.fixture(autouse=True)
+def disable_libsecret(monkeypatch):
+    from cozy.control import secrets
+    secrets._original_get_libsecret = secrets._get_libsecret
+    monkeypatch.setattr(secrets, "_get_libsecret", lambda: None)
+
+
 def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
@@ -106,6 +113,7 @@ def teardown_db(db_path, models, test_db):
 def prepare_db():
     from playhouse.pool import PooledSqliteDatabase
 
+    from cozy.db.abs_server import AudiobookshelfBook, AudiobookshelfServer
     from cozy.db.artwork_cache import ArtworkCache
     from cozy.db.book import Book
     from cozy.db.collation import collate_natural
@@ -117,7 +125,8 @@ def prepare_db():
     from cozy.db.track import Track
     from cozy.db.track_to_file import TrackToFile
 
-    models = [Track, Book, File, TrackToFile, Settings, ArtworkCache, Storage, StorageBlackList, OfflineCache]
+    models = [Track, Book, File, TrackToFile, Settings, ArtworkCache, Storage, StorageBlackList, OfflineCache,
+              AudiobookshelfServer, AudiobookshelfBook]
 
     print("Setup database...")
 

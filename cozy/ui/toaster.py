@@ -1,5 +1,5 @@
 import inject
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, GLib, Gtk
 
 
 class ToastNotifier:
@@ -11,5 +11,7 @@ class ToastNotifier:
         self.overlay: Adw.ToastOverlay = self._builder.get_object("toast_overlay")
 
     def show(self, message: str) -> None:
-        self.overlay.add_toast(Adw.Toast(title=message, timeout=2))
+        self.overlay.add_toast(
+            Adw.Toast(title=GLib.markup_escape_text(message), timeout=2)
+        )
 

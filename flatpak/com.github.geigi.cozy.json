@@ -16,6 +16,7 @@
     "--filesystem=xdg-run/gvfsd",
     "--talk-name=org.gtk.vfs.*",
     "--talk-name=org.gnome.SessionManager",
+    "--talk-name=org.freedesktop.secrets",
     "--system-talk-name=org.freedesktop.login1"
   ],
   "modules": [

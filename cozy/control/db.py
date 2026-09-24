@@ -2,6 +2,7 @@ import logging
 import time
 
 from cozy.control.db_updater import update_db
+from cozy.db.abs_server import AudiobookshelfBook, AudiobookshelfServer
 from cozy.db.artwork_cache import ArtworkCache
 from cozy.db.book import Book
 from cozy.db.collation import collate_natural
@@ -32,14 +33,16 @@ def init_db():
         _db.start()
     else:
         _db.create_tables(
-            [Track, Book, Settings, ArtworkCache, Storage, StorageBlackList, OfflineCache, TrackToFile, File])
+            [Track, Book, Settings, ArtworkCache, Storage, StorageBlackList, OfflineCache, TrackToFile, File,
+             AudiobookshelfServer, AudiobookshelfBook])
         _db.stop()
         _db.start()
 
     while not _db.table_exists("settings"):
         time.sleep(0.01)
 
-    _db.bind([Book, Track, Settings, ArtworkCache, StorageBlackList, OfflineCache, Storage, TrackToFile, File],
+    _db.bind([Book, Track, Settings, ArtworkCache, StorageBlackList, OfflineCache, Storage, TrackToFile, File,
+              AudiobookshelfServer, AudiobookshelfBook],
              bind_refs=False,
              bind_backrefs=False)
 
