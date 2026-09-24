@@ -7,7 +7,14 @@ from types import SimpleNamespace
 import pytest
 import requests
 
-from cozy.control.offline_cache import OfflineCache, download_remote_file
+from cozy.control.offline_cache import (
+    DOWNLOAD_CANCELLED,
+    DOWNLOAD_COMPLETED,
+    DOWNLOAD_FAILED,
+    DOWNLOAD_NO_SPACE,
+    OfflineCache,
+    download_remote_file,
+)
 from cozy.db.file import File
 from cozy.db.model_base import get_sqlite_database
 from cozy.db.offline_cache import OfflineCache as OfflineCacheModel
@@ -45,7 +52,7 @@ def test_download_remote_file_writes_file(tmp_path: Path):
     session = FakeSession(FakeResponse(200, [b"abc", b"def"], content_length=6))
     progress = []
 
-    completed = download_remote_file(
+    result = download_remote_file(
         "https://abs.local/s/track",
         destination,
         cancelled=lambda: False,
@@ -53,7 +60,7 @@ def test_download_remote_file_writes_file(tmp_path: Path):
         session=session,
     )
 
-    assert completed is True
+    assert result == DOWNLOAD_COMPLETED
     assert destination.read_bytes() == b"abcdef"
     assert not (tmp_path / "cached.part").exists()
     assert session.requests[0]["headers"] == {}
@@ -65,11 +72,11 @@ def test_download_remote_file_resumes_partial_file(tmp_path: Path):
     (tmp_path / "cached.part").write_bytes(b"abc")
     session = FakeSession(FakeResponse(206, [b"def"], content_length=3))
 
-    completed = download_remote_file(
+    result = download_remote_file(
         "https://abs.local/s/track", destination, cancelled=lambda: False, session=session
     )
 
-    assert completed is True
+    assert result == DOWNLOAD_COMPLETED
     assert destination.read_bytes() == b"abcdef"
     assert session.requests[0]["headers"] == {"Range": "bytes=3-"}
 
@@ -79,11 +86,11 @@ def test_download_remote_file_restarts_when_range_ignored(tmp_path: Path):
     (tmp_path / "cached.part").write_bytes(b"stale")
     session = FakeSession(FakeResponse(200, [b"new"], content_length=3))
 
-    completed = download_remote_file(
+    result = download_remote_file(
         "https://abs.local/s/track", destination, cancelled=lambda: False, session=session
     )
 
-    assert completed is True
+    assert result == DOWNLOAD_COMPLETED
     assert destination.read_bytes() == b"new"
     assert session.requests[0]["headers"] == {"Range": "bytes=5-"}
 
@@ -92,11 +99,11 @@ def test_download_remote_file_keeps_partial_file_on_cancel(tmp_path: Path):
     destination = tmp_path / "cached"
     session = FakeSession(FakeResponse(200, [b"abc", b"def"], content_length=6))
 
-    completed = download_remote_file(
+    result = download_remote_file(
         "https://abs.local/s/track", destination, cancelled=lambda: True, session=session
     )
 
-    assert completed is False
+    assert result == DOWNLOAD_CANCELLED
     assert not destination.exists()
     assert not (tmp_path / "cached.part").exists()
 
@@ -105,11 +112,11 @@ def test_download_remote_file_returns_false_on_error_status(tmp_path: Path):
     destination = tmp_path / "cached"
     session = FakeSession(FakeResponse(404, []))
 
-    completed = download_remote_file(
+    result = download_remote_file(
         "https://abs.local/s/track", destination, cancelled=lambda: False, session=session
     )
 
-    assert completed is False
+    assert result == DOWNLOAD_FAILED
     assert not destination.exists()
 
 
@@ -118,14 +125,14 @@ def test_download_remote_file_returns_false_on_request_exception(tmp_path: Path)
         def get(self, *args, **kwargs):
             raise requests.ConnectionError("boom")
 
-    completed = download_remote_file(
+    result = download_remote_file(
         "https://abs.local/s/track",
         tmp_path / "cached",
         cancelled=lambda: False,
         session=FailingSession(),
     )
 
-    assert completed is False
+    assert result == DOWNLOAD_FAILED
 
 
 def test_download_remote_file_closes_response(tmp_path: Path):
@@ -171,6 +178,13 @@ def _book(*file_ids):
 def _cache_entry(path: str, copied: bool):
     file = File.create(path=path, modified=0)
     return OfflineCacheModel.create(original_file=file, cached_file=path, copied=copied)
+
+
+def _entry_for_book(book, copied: bool):
+    file_id = book.chapters[0].file_id
+    return OfflineCacheModel.create(
+        original_file=file_id, cached_file=f"cached-{file_id}", copied=copied
+    )
 
 
 def test_get_book_progress_returns_none_without_cache_entries(peewee_database):
@@ -231,7 +245,7 @@ def http_server():
     server.server_close()
 
 
-def _cache_with_file(url: str, tmp_path: Path):
+def _model_book(url: str):
     from cozy.db.book import Book
     from cozy.db.track import Track
     from cozy.db.track_to_file import TrackToFile
@@ -244,6 +258,11 @@ def _cache_with_file(url: str, tmp_path: Path):
 
     book = ModelBook(get_sqlite_database(), db_book)
     book._settings = None
+    return book
+
+
+def _cache_with_file(url: str, tmp_path: Path):
+    book = _model_book(url)
 
     book.downloaded = False
 
@@ -300,3 +319,69 @@ def test_download_remote_file_does_not_log_token(tmp_path: Path, caplog):
 
     assert "supersecret" not in caplog.text
     assert "https://abs.local/s/track" in caplog.text
+
+
+def test_download_remote_file_reports_insufficient_space(tmp_path: Path, monkeypatch):
+    import cozy.control.offline_cache as offline_cache_module
+
+    monkeypatch.setattr(offline_cache_module, "free_disk_space", lambda path: 0)
+    session = FakeSession(FakeResponse(200, [b"abc"], content_length=3))
+
+    result = download_remote_file(
+        "https://abs.local/s/track", tmp_path / "cached", cancelled=lambda: False, session=session
+    )
+
+    assert result == DOWNLOAD_NO_SPACE
+    assert not (tmp_path / "cached").exists()
+
+
+def test_get_cache_size_sums_cached_files(peewee_database, tmp_path):
+    (tmp_path / "one").write_bytes(b"x" * 100)
+    (tmp_path / "two").write_bytes(b"x" * 250)
+
+    cache = _cache()
+    cache.cache_dir = tmp_path
+
+    assert cache.get_cache_size() == 350
+
+
+def test_clear_cache_removes_files_and_resets_flags(peewee_database, tmp_path):
+    cache, book = _cache_with_file("https://abs.local/s/track.mp3", tmp_path)
+    book.offline = True
+    book.downloaded = True
+    entry = _entry_for_book(book, copied=True)
+    (tmp_path / entry.cached_file).write_bytes(b"x" * 10)
+
+    cache.clear_cache()
+
+    assert not (tmp_path / entry.cached_file).exists()
+    assert not OfflineCacheModel.select().exists()
+    assert book.downloaded is False
+    assert book.offline is False
+
+
+def test_remove_offline_books_only_removes_offline_books(peewee_database, tmp_path):
+    cache, offline_book = _cache_with_file("https://abs.local/s/track.mp3", tmp_path)
+    offline_book.offline = True
+    entry = _entry_for_book(offline_book, copied=True)
+    (tmp_path / entry.cached_file).write_bytes(b"x" * 10)
+
+    online_book = _model_book("https://abs.local/s/other.mp3")
+    cache._library = SimpleNamespace(books=[offline_book, online_book])
+
+    cache.remove_offline_books()
+
+    assert not OfflineCacheModel.select().exists()
+    assert not (tmp_path / entry.cached_file).exists()
+    assert offline_book.offline is False
+    assert online_book.offline is False
+
+
+def test_format_size():
+    from cozy.ui.widgets.offline_cache import format_size
+
+    assert format_size(0) == "0 B"
+    assert format_size(1023) == "1023 B"
+    assert format_size(1024) == "1.0 kB"
+    assert format_size(1024 * 1024 * 3) == "3.0 MB"
+    assert format_size(1024**3 * 2) == "2.0 GB"

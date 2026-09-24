@@ -131,7 +131,7 @@ class AbsServerDialog(Adw.Dialog):
 
         self.set_child(box)
 
-    def _on_add(self, *_):
+    def _on_add(self, *_args):
         name = self.name_entry.get_text().strip()
         url = self.url_entry.get_text().strip()
 

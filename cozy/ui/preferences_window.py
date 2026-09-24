@@ -3,6 +3,7 @@ from gi.repository import Adw, Gio, Gtk
 
 from cozy.ui.widgets.abs import AbsServers
 from cozy.ui.widgets.error_reporting import ErrorReporting
+from cozy.ui.widgets.offline_cache import OfflineCacheGroup
 from cozy.ui.widgets.storages import StorageLocations
 from cozy.view_model.settings_view_model import SettingsViewModel
 
@@ -36,6 +37,9 @@ class PreferencesWindow(Adw.PreferencesDialog):
 
         self.abs_servers_view = AbsServers()
         self.abs_page.add(self.abs_servers_view)
+
+        self.offline_cache_view = OfflineCacheGroup()
+        self.abs_page.add(self.offline_cache_view)
 
         self._view_model.bind_to("lock_ui", self._on_lock_ui_changed)
         self._bind_settings()

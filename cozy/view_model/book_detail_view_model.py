@@ -215,6 +215,10 @@ class BookDetailViewModel(Observable, EventSender):
             self._notify("download_progress")
             return
 
+        if event == "insufficient-space":
+            self.emit_event_main_thread("insufficient-space", message)
+            return
+
         if (
             self._book
             and isinstance(message, Book)

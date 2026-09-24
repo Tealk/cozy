@@ -7,7 +7,7 @@ from typing import Callable, Optional
 
 import inject
 import requests
-from gi.repository import Gio
+from gi.repository import Gio, GLib
 
 import cozy.tools as tools
 from cozy.architecture.event_sender import EventSender
@@ -30,9 +30,23 @@ BYTES_PER_MEGABYTE = 1024 * 1024
 SUMMARY_INTERVAL = 30.0
 SUMMARY_FILE_COUNT = 25
 
+DOWNLOAD_COMPLETED = "completed"
+DOWNLOAD_CANCELLED = "cancelled"
+DOWNLOAD_FAILED = "failed"
+DOWNLOAD_NO_SPACE = "insufficient-space"
+
 
 def _url_for_log(url: str) -> str:
     return url.split("?", 1)[0]
+
+
+def free_disk_space(path: Path) -> int:
+    try:
+        info = Gio.File.new_for_path(str(path)).query_filesystem_info("filesystem::free", None)
+        return info.get_attribute_uint64("filesystem::free")
+    except GLib.Error as e:
+        log.warning("Could not determine free disk space for %s: %s", path, e)
+        return -1
 
 
 def download_remote_file(
@@ -41,12 +55,12 @@ def download_remote_file(
     cancelled: Callable[[], bool],
     progress_callback: Optional[Callable[[int, int], None]] = None,
     session=None,
-) -> bool:
+) -> str:
     session = session or requests
     part_path = destination.parent / (destination.name + ".part")
 
     if cancelled():
-        return False
+        return DOWNLOAD_CANCELLED
 
     downloaded = part_path.stat().st_size if part_path.exists() else 0
     headers = {"Range": f"bytes={downloaded}-"} if downloaded else {}
@@ -66,12 +80,23 @@ def download_remote_file(
                 _url_for_log(url),
                 response.status_code,
             )
-            return False
+            return DOWNLOAD_FAILED
 
         if response.status_code == 200:
             downloaded = 0
 
         total = downloaded + int(response.headers.get("Content-Length") or 0)
+
+        free_space = free_disk_space(destination.parent)
+        if total > 0 and 0 <= free_space < total:
+            log.warning(
+                "Not enough free disk space for %s: %.1f MB needed, %.1f MB available",
+                _url_for_log(url),
+                total / BYTES_PER_MEGABYTE,
+                free_space / BYTES_PER_MEGABYTE,
+            )
+            return DOWNLOAD_NO_SPACE
+
         last_update = 0.0
         last_log = 0.0
 
@@ -86,7 +111,7 @@ def download_remote_file(
                         _url_for_log(url),
                         downloaded / BYTES_PER_MEGABYTE,
                     )
-                    return False
+                    return DOWNLOAD_CANCELLED
 
                 part_file.write(chunk)
                 downloaded += len(chunk)
@@ -118,7 +143,7 @@ def download_remote_file(
                         progress_callback = None
     except requests.RequestException as e:
         log.warning("Could not download %s: %s", _url_for_log(url), e)
-        return False
+        return DOWNLOAD_FAILED
     finally:
         if response is not None:
             response.close()
@@ -131,7 +156,7 @@ def download_remote_file(
     if progress_callback:
         progress_callback(downloaded, downloaded)
 
-    return True
+    return DOWNLOAD_COMPLETED
 
 
 class OfflineCache(EventSender):
@@ -244,6 +269,41 @@ class OfflineCache(EventSender):
             return self.cache_dir / query.get().cached_file
         else:
             return None
+
+    def get_cache_size(self) -> int:
+        return sum(path.stat().st_size for path in self.cache_dir.glob("*") if path.is_file())
+
+    def get_offline_books(self) -> list[Book]:
+        return [book for book in self._library.books if book.offline]
+
+    def clear_cache(self) -> None:
+        self._stop_processing()
+        self.queue = []
+
+        entries = list(OfflineCacheModel.select())
+        file_ids = {entry.original_file_id for entry in entries}
+
+        for entry in entries:
+            self._delete_cached_file(entry.cached_file)
+
+        OfflineCacheModel.delete().execute()
+
+        for book in self._library.books:
+            if file_ids & {chapter.file_id for chapter in book.chapters}:
+                self._reset_book_flags(book)
+
+        log.info("Cleared the offline cache")
+
+    def remove_offline_books(self) -> None:
+        for book in self.get_offline_books():
+            self.remove(book)
+            book.offline = False
+
+        log.info("Removed all books from the offline cache")
+
+    def _reset_book_flags(self, book: Book) -> None:
+        book.downloaded = False
+        book.offline = False
 
     def get_book_progress(self, book: Book) -> Optional[float]:
         file_ids = {chapter.file_id for chapter in book.chapters}
@@ -396,7 +456,7 @@ class OfflineCache(EventSender):
         destination = self.cache_dir / new_item.cached_file
 
         try:
-            downloaded = download_remote_file(
+            result = download_remote_file(
                 resolve_playback_uri(new_item.original_file.path),
                 destination,
                 cancelled=lambda: self.thread.stopped(),
@@ -409,12 +469,21 @@ class OfflineCache(EventSender):
             log.error("Could not download %r to offline cache: %s", new_item.original_file.path, e)
             return
 
-        if downloaded:
+        if result == DOWNLOAD_COMPLETED:
             OfflineCacheModel.update(copied=True).where(
                 OfflineCacheModel.id == new_item.id).execute()
             self._count_downloaded_file(book, destination)
+        elif result == DOWNLOAD_NO_SPACE:
+            self.emit_event_main_thread(
+                "insufficient-space",
+                _("Not enough free disk space to download {book_title}").format(
+                    book_title=book.name
+                ),
+            )
+        elif result == DOWNLOAD_CANCELLED:
+            log.info("Download of %r was cancelled.", new_item.original_file.path)
         else:
-            log.info("Download of %r was cancelled or failed.", new_item.original_file.path)
+            log.info("Download of %r failed.", new_item.original_file.path)
 
     def _count_downloaded_file(self, book: Book, destination: Path) -> None:
         self.files_done += 1

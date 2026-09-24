@@ -102,6 +102,7 @@ class BookDetailView(Adw.NavigationPage):
         self._view_model.bind_to("is_book_available", self._on_book_available_changed)
         self._view_model.bind_to("downloaded", self._on_downloaded_changed)
         self._view_model.bind_to("download_progress", self._on_download_progress_changed)
+        self._view_model.add_listener(self._on_view_model_event)
         self._view_model.bind_to("current_chapter", self._on_current_chapter_changed)
         self._view_model.bind_to("length", self._on_length_changed)
         self._view_model.bind_to("progress", self._on_progress_changed)
@@ -309,6 +310,10 @@ class BookDetailView(Adw.NavigationPage):
         if self._chapters_thread:
             self._chapters_thread.join(timeout=0.2)
 
+    def _on_view_model_event(self, event: str, message) -> None:
+        if event == "insufficient-space" and isinstance(message, str):
+            self._toaster.show(message)
+
     def _on_downloaded_changed(self):
         book = self._view_model.book
 
@@ -316,9 +321,7 @@ class BookDetailView(Adw.NavigationPage):
             return
 
         self._download_toast_shown = True
-        self._toaster.show(
-            _("{book_title} is now available offline").format(book_title=book.name)
-        )
+        self._toaster.show(_("{book_title} is now available offline").format(book_title=book.name))
 
     def _on_download_progress_changed(self):
         progress = self._view_model.download_progress
