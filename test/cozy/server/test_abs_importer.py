@@ -2,6 +2,8 @@ import pytest
 
 from cozy.db.abs_server import AudiobookshelfBook, AudiobookshelfServer
 from cozy.db.book import Book
+from cozy.db.file import File
+from cozy.db.offline_cache import OfflineCache as OfflineCacheModel
 from cozy.db.track import Track
 from cozy.db.track_to_file import TrackToFile
 from cozy.server.abs_importer import AbsImporter
@@ -261,3 +263,94 @@ def test_sync_imports_tracks_field_with_per_track_chapters(server):
     assert track.number == 1
     assert track.length == 600
     assert TrackToFile.get(TrackToFile.track == track).start_at == 0
+
+
+def _changed_tracks_item(extra_track: bool):
+    tracks = []
+    for track in ITEM["media"]["audioTracks"]:
+        tracks.append(
+            {
+                **track,
+                "chapters": [
+                    {"title": track["title"], "start": track["startOffset"],
+                     "end": track["startOffset"] + track["duration"]}
+                ],
+            }
+        )
+
+    if extra_track:
+        tracks.append(
+            {
+                "index": 3,
+                "startOffset": 0,
+                "duration": 300,
+                "title": "03-book.mp3",
+                "contentUrl": "/s/item/li_1/03-book.mp3",
+                "metadata": {"filename": "03-book.mp3"},
+                "chapters": [{"title": "03-book.mp3", "start": 0, "end": 300}],
+            }
+        )
+
+    return {
+        **ITEM,
+        "updatedAt": 500,
+        "media": {
+            **ITEM["media"],
+            "chapters": [],
+            "audioTracks": tracks,
+        },
+    }
+
+
+def test_sync_reports_changed_file_set(server):
+    client = FakeClient([ITEM], details={"li_1": ITEM})
+    AbsImporter(client, server).sync()
+
+    changed_item = _changed_tracks_item(extra_track=True)
+    client.items = [changed_item]
+    client.details["li_1"] = changed_item
+
+    result = AbsImporter(client, server).sync()
+
+    assert result.updated == 1
+    assert result.changed_books == [AudiobookshelfBook.get().book.id]
+
+
+def test_sync_does_not_report_changed_file_set_when_files_stay_equal(server):
+    client = FakeClient([ITEM], details={"li_1": ITEM})
+    AbsImporter(client, server).sync()
+
+    changed_item = _changed_tracks_item(extra_track=False)
+    client.items = [changed_item]
+    client.details["li_1"] = changed_item
+
+    result = AbsImporter(client, server).sync()
+
+    assert result.updated == 1
+    assert result.changed_books == []
+
+
+def test_sync_reports_removed_cached_files(server):
+    client = FakeClient([ITEM], details={"li_1": ITEM})
+    AbsImporter(client, server).sync()
+
+    file = File.get(File.path == BASE_URL + "/s/item/li_1/02-book.mp3")
+    OfflineCacheModel.create(original_file=file, cached_file="cached-2", copied=True)
+
+    client.items = [{**ITEM, "updatedAt": 500}]
+    client.details["li_1"] = {
+        **ITEM,
+        "updatedAt": 500,
+        "media": {
+            **ITEM["media"],
+            "audioTracks": [ITEM["media"]["audioTracks"][0]],
+        },
+    }
+
+    result = AbsImporter(client, server).sync()
+
+    assert result.removed_cached_files == ["cached-2"]
+    assert not OfflineCacheModel.select().where(
+        OfflineCacheModel.cached_file == "cached-2"
+    ).exists()
+    assert not File.select().where(File.path == BASE_URL + "/s/item/li_1/02-book.mp3").exists()

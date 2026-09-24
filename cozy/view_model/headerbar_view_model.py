@@ -29,6 +29,7 @@ class HeaderbarViewModel(Observable, EventSender):
         self._state: HeaderBarState = HeaderBarState.PLAYING
         self._work_progress: float = 0.0
         self._work_message: str = ""
+        self._work_message_base: str = ""
         self._view: View = View.EMPTY_STATE
 
         self._importer.add_listener(self._on_importer_event)
@@ -99,11 +100,21 @@ class HeaderbarViewModel(Observable, EventSender):
         if event == "progress" and isinstance(message, float):
             self._work_progress = message
             self._notify("work_progress")
+            self._update_work_message()
         elif event == "start":
-            self._start_working(_("Copying new files…"))
+            self._work_message_base = ""
+            self._start_working(_("Downloading audiobooks…"))
         elif event == "message":
-            self._work_message = message
-            self._notify("work_message")
+            self._work_message_base = message
+            self._update_work_message()
         elif event == "finished":
             self._stop_working()
 
+    def _update_work_message(self):
+        if not self._work_message_base:
+            return
+
+        self._work_message = "{message} ({progress} %)".format(
+            message=self._work_message_base, progress=int(self.work_progress * 100)
+        )
+        self._notify("work_message")

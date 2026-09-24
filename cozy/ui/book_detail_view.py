@@ -50,6 +50,10 @@ class BookDetailView(Adw.NavigationPage):
 
     book_progress_bar: Gtk.ProgressBar = Gtk.Template.Child()
 
+    download_box: Gtk.Box = Gtk.Template.Child()
+    download_progress_bar: Gtk.ProgressBar = Gtk.Template.Child()
+    download_progress_label: Gtk.Label = Gtk.Template.Child()
+
     album_art: Gtk.Picture = Gtk.Template.Child()
     album_art_container: Gtk.Stack = Gtk.Template.Child()
     fallback_icon: Gtk.Image = Gtk.Template.Child()
@@ -68,6 +72,7 @@ class BookDetailView(Adw.NavigationPage):
     _toaster: ToastNotifier = inject.attr(ToastNotifier)
 
     _current_selected_chapter: ChapterElement | None = None
+    _download_toast_shown: bool = False
 
     def __init__(self):
         super().__init__()
@@ -95,7 +100,8 @@ class BookDetailView(Adw.NavigationPage):
         self._view_model.bind_to("book", self._on_book_changed)
         self._view_model.bind_to("playing", self._on_play_changed)
         self._view_model.bind_to("is_book_available", self._on_book_available_changed)
-        self._view_model.bind_to("downloaded", self._set_book_download_status)
+        self._view_model.bind_to("downloaded", self._on_downloaded_changed)
+        self._view_model.bind_to("download_progress", self._on_download_progress_changed)
         self._view_model.bind_to("current_chapter", self._on_current_chapter_changed)
         self._view_model.bind_to("length", self._on_length_changed)
         self._view_model.bind_to("progress", self._on_progress_changed)
@@ -125,6 +131,7 @@ class BookDetailView(Adw.NavigationPage):
         self._display_chapters(book)
 
         self._current_selected_chapter = None
+        self._download_toast_shown = False
 
         self.total_label.set_text(_("Loading…"))
         self.unavailable_banner.set_revealed(False)
@@ -201,7 +208,7 @@ class BookDetailView(Adw.NavigationPage):
     def _on_chapters_displayed(self):
         self.total_label.set_text(self._view_model.total_text)
         self.total_label.set_visible(True)
-        self._set_book_download_status()
+        self._on_download_progress_changed()
 
         self._on_current_chapter_changed()
         self._on_play_changed()
@@ -273,7 +280,7 @@ class BookDetailView(Adw.NavigationPage):
         self._chapters_event.set()
 
     def _display_external_section(self):
-        external = self._view_model.is_book_external
+        external = self._view_model.is_book_external or self._view_model.is_book_remote
         self.available_offline_action.set_enabled(external)
 
         if external:
@@ -302,18 +309,32 @@ class BookDetailView(Adw.NavigationPage):
         if self._chapters_thread:
             self._chapters_thread.join(timeout=0.2)
 
-    def _set_book_download_status(self):
-        if not self._view_model.is_book_external:
+    def _on_downloaded_changed(self):
+        book = self._view_model.book
+
+        if self._download_toast_shown or not book or not book.offline or not book.downloaded:
             return
 
-        # TODO: show this only after download
-        # if self._view_model.book.downloaded:
-        #     self._toaster.show(_("{book_title} is now available offline").format(book_title=self._view_model.book.name))
+        self._download_toast_shown = True
+        self._toaster.show(
+            _("{book_title} is now available offline").format(book_title=book.name)
+        )
+
+    def _on_download_progress_changed(self):
+        progress = self._view_model.download_progress
+
+        if progress is None:
+            self.download_box.set_visible(False)
+            return
+
+        self.download_progress_bar.set_fraction(progress)
+        self.download_progress_label.set_text(self._view_model.download_progress_text)
+        self.download_box.set_visible(True)
 
     def _download_switch_changed(self, action, value):
         action.set_state(value)
+        self._download_toast_shown = False
         self._view_model.download_book(value.get_boolean())
-        self._set_book_download_status()
 
     def _play_chapter_clicked(self, _, chapter: Chapter):
         self._view_model.play_chapter(chapter)

@@ -125,6 +125,26 @@ template $BookDetail: Adw.NavigationPage {
                   ProgressBar book_progress_bar {
                   }
 
+                  Box download_box {
+                    orientation: vertical;
+                    spacing: 4;
+                    halign: fill;
+                    margin-top: 6;
+                    visible: false;
+
+                    ProgressBar download_progress_bar {
+                      halign: fill;
+                    }
+
+                    Label download_progress_label {
+                      halign: start;
+                      styles [
+                        "caption",
+                        "dim-label",
+                      ]
+                    }
+                  }
+
                   Box {
                     orientation: horizontal;
                     hexpand: true;

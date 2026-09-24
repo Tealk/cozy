@@ -7,6 +7,7 @@ from peewee import DoesNotExist
 from cozy.db.abs_server import AudiobookshelfBook, AudiobookshelfServer
 from cozy.db.book import Book
 from cozy.db.file import File
+from cozy.db.offline_cache import OfflineCache as OfflineCacheModel
 from cozy.db.track import Track
 from cozy.db.track_to_file import TrackToFile
 
@@ -23,6 +24,8 @@ class SyncResult:
         self.updated = 0
         self.skipped = 0
         self.removed = 0
+        self.changed_books: list[int] = []
+        self.removed_cached_files: list[str] = []
 
     @property
     def total(self) -> int:
@@ -57,11 +60,14 @@ class AbsImporter:
 
             time.sleep(PAUSE_BETWEEN_ITEMS)
             detail = self._client.get_item(item_id)
-            self._import_item(detail, progress)
+            files_changed, removed_cached_files = self._import_item(detail, progress)
+            result.removed_cached_files.extend(removed_cached_files)
 
             seen_item_ids.add(item_id)
             if mapping is not None:
                 result.updated += 1
+                if files_changed:
+                    result.changed_books.append(mapping.book.id)
             else:
                 result.created += 1
 
@@ -69,7 +75,7 @@ class AbsImporter:
 
         return result
 
-    def _import_item(self, item: dict, progress: dict = None) -> None:
+    def _import_item(self, item: dict, progress: dict = None) -> tuple[bool, list[str]]:
         item_id = item["id"]
         library_id = item.get("libraryId", "")
         updated_at = item.get("updatedAt", 0)
@@ -79,7 +85,7 @@ class AbsImporter:
 
         if not audio_tracks:
             self._mark_synced(item_id, library_id, updated_at)
-            return
+            return False, []
 
         mapping = self._get_or_create_mapping(item_id)
         book = self._get_book(mapping)
@@ -89,7 +95,8 @@ class AbsImporter:
         book.reader = metadata.get("narratorName") or UNKNOWN
         book.hidden = False
 
-        self._delete_content(book)
+        existing_paths = self._file_paths_for_book(book)
+        removed_cached_files = self._delete_content(book)
 
         if mapping is not None:
             book.position = 0
@@ -106,6 +113,14 @@ class AbsImporter:
 
         book.save()
         self._update_mapping(mapping, item_id, library_id, updated_at, book)
+
+        files_changed = bool(existing_paths) and self._file_paths_for_book(book) != existing_paths
+        return files_changed, removed_cached_files
+
+    @staticmethod
+    def _file_paths_for_book(book: Book) -> set[str]:
+        query = File.select(File.path).join(TrackToFile).join(Track).where(Track.book == book)
+        return {row.path for row in query}
 
     def _apply_progress_to_mapping(
         self, mapping: AudiobookshelfBook, progress: Optional[dict]
@@ -218,7 +233,7 @@ class AbsImporter:
         TrackToFile.create(track=track, file=file_model, start_at=start_at)
 
     @staticmethod
-    def _delete_content(book: Book) -> None:
+    def _delete_content(book: Book) -> list[str]:
         file_ids = set()
         mappings = TrackToFile.select().join(Track).join(Book).where(Track.book == book)
         for mapping in mappings:
@@ -228,9 +243,19 @@ class AbsImporter:
         TrackToFile.delete().where(TrackToFile.track.in_(track_ids)).execute()
         Track.delete().where(Track.book == book).execute()
 
+        removed_cached_files = []
         for file_id in file_ids:
             if not TrackToFile.select().join(File).where(TrackToFile.file.id == file_id).exists():
+                cache_entries = OfflineCacheModel.select().where(
+                    OfflineCacheModel.original_file == file_id
+                )
+                removed_cached_files.extend(entry.cached_file for entry in cache_entries)
+                OfflineCacheModel.delete().where(
+                    OfflineCacheModel.original_file == file_id
+                ).execute()
                 File.delete().where(File.id == file_id).execute()
+
+        return removed_cached_files
 
     def _remove_departed_books(self, seen_item_ids: set[str]) -> int:
         removed = 0

@@ -11,6 +11,7 @@ from cozy.model.book import Book
 from cozy.model.chapter import Chapter
 from cozy.model.library import Library
 from cozy.model.settings import Settings
+from cozy.server.playback import is_remote_file
 from cozy.settings import ApplicationSettings
 
 
@@ -128,6 +129,25 @@ class BookDetailViewModel(Observable, EventSender):
         return False
 
     @property
+    def is_book_remote(self) -> bool:
+        return is_remote_file(self._book.chapters[0].file)
+
+    @property
+    def download_progress(self) -> float | None:
+        if not self._book or not self._book.offline or self._book.downloaded:
+            return None
+
+        return self._offline_cache.get_book_progress(self._book)
+
+    @property
+    def download_progress_text(self) -> str | None:
+        progress = self.download_progress
+        if progress is None:
+            return None
+
+        return _("{progress} % downloaded").format(progress=int(progress * 100))
+
+    @property
     def lock_ui(self) -> bool:
         return self._lock_ui
 
@@ -143,6 +163,8 @@ class BookDetailViewModel(Observable, EventSender):
             self._offline_cache.add(self._book)
         else:
             self._offline_cache.remove(self._book)
+
+        self._notify("download_progress")
 
     def open_library(self):
         self.emit_event(OpenView.LIBRARY)
@@ -189,6 +211,10 @@ class BookDetailViewModel(Observable, EventSender):
         self._notify("length")
 
     def _on_offline_cache_event(self, event, message) -> None:
+        if event == "progress":
+            self._notify("download_progress")
+            return
+
         if (
             self._book
             and isinstance(message, Book)
@@ -196,6 +222,7 @@ class BookDetailViewModel(Observable, EventSender):
             and event in {"book-offline-removed", "book-offline"}
         ):
             self._notify("downloaded")
+            self._notify("download_progress")
 
     def _on_app_setting_changed(self, event, _):
         if event == "swap-author-reader":

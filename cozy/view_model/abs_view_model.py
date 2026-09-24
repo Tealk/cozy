@@ -9,6 +9,7 @@ from gi.repository import GLib
 from cozy.architecture.event_sender import EventSender
 from cozy.architecture.observable import Observable
 from cozy.control import secrets
+from cozy.control.offline_cache import OfflineCache
 from cozy.db.abs_server import AudiobookshelfBook, AudiobookshelfServer
 from cozy.model.library import Library
 from cozy.server.abs_importer import AbsImporter
@@ -21,6 +22,7 @@ log = logging.getLogger("abs_view_model")
 class AbsViewModel(Observable, EventSender):
     _library: Library = inject.attr(Library)
     _library_view_model: LibraryViewModel = inject.attr(LibraryViewModel)
+    _offline_cache: OfflineCache = inject.attr(OfflineCache)
 
     def __init__(self) -> None:
         super().__init__()
@@ -87,8 +89,20 @@ class AbsViewModel(Observable, EventSender):
             self.emit_event_main_thread("sync-failed", str(e))
             return
 
+        self._apply_offline_cache_changes(result)
         self.emit_event_main_thread("sync-finished", (server, result))
         GLib.idle_add(self._library_view_model.refresh_books)
+
+    def _apply_offline_cache_changes(self, result) -> None:
+        self._offline_cache.forget_cached_files(result.removed_cached_files)
+
+        for book_id in result.changed_books:
+            book = next((book for book in self._library.books if book.id == book_id), None)
+            if book is None or not book.offline:
+                continue
+
+            book.downloaded = False
+            self._offline_cache.add(book)
 
     @staticmethod
     def _default_book_library(client: AudiobookshelfClient) -> str:
