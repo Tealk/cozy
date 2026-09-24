@@ -23,6 +23,12 @@ class AbsServerRow(Adw.ActionRow):
         self.sync_button.set_tooltip_text(_("Sync"))
         self.add_suffix(self.sync_button)
 
+        self.force_sync_button = Gtk.Button(
+            icon_name="document-revert-symbolic", valign=Gtk.Align.CENTER
+        )
+        self.force_sync_button.set_tooltip_text(_("Force sync"))
+        self.add_suffix(self.force_sync_button)
+
         self.remove_button = Gtk.Button(icon_name="edit-delete-symbolic", valign=Gtk.Align.CENTER)
         self.remove_button.set_tooltip_text(_("Remove server"))
         self.add_suffix(self.remove_button)
@@ -46,6 +52,11 @@ class AbsServers(Adw.PreferencesGroup):
         self._server_list.set_selection_mode(Gtk.SelectionMode.NONE)
         self.add(self._server_list)
 
+        self._progress_label = Gtk.Label(label="", visible=False)
+        self._progress_label.add_css_class("dim-label")
+        self._progress_label.add_css_class("caption")
+        self.add(self._progress_label)
+
         self._new_server_button = Adw.ButtonRow(title=_("Add Server"))
         self._new_server_button.set_activatable(True)
         self._new_server_button.set_end_icon_name("list-add-symbolic")
@@ -60,6 +71,7 @@ class AbsServers(Adw.PreferencesGroup):
         for server in self._view_model.servers:
             row = AbsServerRow(server)
             row.sync_button.connect("clicked", self._on_sync, server)
+            row.force_sync_button.connect("clicked", self._on_force_sync, server)
             row.remove_button.connect("clicked", self._on_remove, server)
             self._server_list.append(row)
 
@@ -69,27 +81,72 @@ class AbsServers(Adw.PreferencesGroup):
 
     def _on_sync(self, button: Gtk.Button, server: AudiobookshelfServer) -> None:
         button.set_sensitive(False)
+        self._progress_label.set_visible(True)
         self._view_model.sync(server)
+
+    def _on_force_sync(self, button: Gtk.Button, server: AudiobookshelfServer) -> None:
+        dialog = Adw.AlertDialog.new(
+            _("Force sync from {name}?").format(name=server.name or server.url),
+            _(
+                "All books are downloaded again from the server. "
+                "Playback progress and metadata on the server overwrite the local state."
+            ),
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("sync", _("Force sync"))
+        dialog.set_response_appearance("sync", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        def on_response(source, result):
+            try:
+                response = source.choose_finish(result)
+            except GLib.Error:
+                return
+
+            if response == "sync":
+                button.set_sensitive(False)
+                self._progress_label.set_visible(True)
+                self._view_model.sync(server, force=True)
+
+        dialog.choose(self.get_root(), None, on_response)
 
     def _on_remove(self, _, server: AudiobookshelfServer) -> None:
         self._view_model.remove(server)
 
     def _on_sync_event(self, event: str, message) -> None:
-        if event == "sync-finished":
-            server, result = message
-            count = result.created + result.updated
-            self._toast.show(
-                _("Synced {count} books from {name}").format(count=count, name=server.name)
+        if event == "sync-progress" and isinstance(message, float):
+            self._progress_label.set_text(
+                _("Syncing… {percent} %").format(percent=int(message * 100))
             )
+            return
+
+        if event == "sync-finished":
+            server, result, force = message
+            count = result.created + result.updated
+            if force:
+                text = _("Full sync finished: {count} books from {name}").format(
+                    count=count, name=server.name
+                )
+            else:
+                text = _("Synced {count} books from {name}").format(count=count, name=server.name)
+
+            if result.skipped:
+                text += " " + _("({count} unchanged)").format(count=result.skipped)
+
+            self._progress_label.set_text("")
+            self._progress_label.set_visible(False)
+            self._toast.show(text, timeout=6)
             if result.failed_items:
                 self._toast.show(
                     _("Could not sync {count} books: {books}").format(
                         count=len(result.failed_items), books=", ".join(result.failed_items[:3])
-                    )
+                    ),
+                    timeout=8,
                 )
             self._reload()
         elif event == "sync-failed":
-            self._toast.show(_("Synchronization failed: ") + message)
+            self._toast.show(_("Synchronization failed: ") + message, timeout=8)
             self._reload()
 
 
