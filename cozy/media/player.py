@@ -34,6 +34,7 @@ class GstPlayer(EventSender):
         self._playback_speed_timer_running: bool = False
         self._volume: float = 1.0
         self._fade_timeout: int | None = None
+        self._resume_state: Gst.State = Gst.State.PAUSED
 
         self._setup_pipeline()
         self._setup_fadeout_control()
@@ -152,6 +153,10 @@ class GstPlayer(EventSender):
             return Gst.State.READY
 
     @property
+    def resume_state(self) -> Gst.State:
+        return self._resume_state
+
+    @property
     def volume(self) -> float:
         return self._player.get_property("volume")
 
@@ -169,6 +174,7 @@ class GstPlayer(EventSender):
                 raise FileNotFoundError()
             uri = "file://" + quote(path)
 
+        self._resume_state = Gst.State.PAUSED
         self._player.set_state(Gst.State.NULL)
         self._playback_speed = 1.0
         self._player.set_property("uri", uri)
@@ -178,6 +184,7 @@ class GstPlayer(EventSender):
         if not self._is_player_loaded() or self.state == Gst.State.PLAYING:
             return
 
+        self._resume_state = Gst.State.PLAYING
         success = self._player.set_state(Gst.State.PLAYING)
 
         if success == Gst.StateChangeReturn.FAILURE:
@@ -190,6 +197,7 @@ class GstPlayer(EventSender):
         if not self._is_player_loaded():
             return
 
+        self._resume_state = Gst.State.PAUSED
         success = self._player.set_state(Gst.State.PAUSED)
 
         if success == Gst.StateChangeReturn.FAILURE:
@@ -202,6 +210,7 @@ class GstPlayer(EventSender):
         if not self._is_player_loaded():
             return
 
+        self._resume_state = Gst.State.PAUSED
         self._player.set_state(Gst.State.NULL)
         self._playback_speed = 1.0
 
@@ -298,7 +307,7 @@ class GstPlayer(EventSender):
                 self._player.set_state(Gst.State.PAUSED)
                 log.info("Buffering…")
             else:
-                self._player.set_state(Gst.State.PLAYING)
+                self._player.set_state(self._resume_state)
                 log.info("Buffering finished.")
         elif t == Gst.MessageType.EOS:
             self.emit_event("file-finished")
@@ -371,8 +380,8 @@ class Player(EventSender):
         last_book = self._library.last_played_book
 
         if last_book:
-            self._continue_book(last_book)
-            self._rewind_feature()
+            self._continue_book(last_book, persist_position=False)
+            self._rewind_feature(persist_position=False)
 
     @property
     def loaded_book(self) -> Optional[Book]:
@@ -501,15 +510,15 @@ class Player(EventSender):
         self._book = book
         self._book.last_played = int(time.time())
 
-    def _continue_book(self, book: Book):
+    def _continue_book(self, book: Book, persist_position: bool = True):
         if self._book == book:
             log.info("Not loading new book because it's unchanged.")
             return
 
         self._load_book(book)
-        self._load_chapter(book.current_chapter)
+        self._load_chapter(book.current_chapter, persist_position=persist_position)
 
-    def _load_chapter(self, chapter: Chapter):
+    def _load_chapter(self, chapter: Chapter, persist_position: bool = True):
         file_changed = False
 
         if not self._book:
@@ -538,7 +547,8 @@ class Player(EventSender):
             self._gst_player.position = chapter.position
 
         if file_changed or self._book.position != chapter.id:
-            self._book.position = chapter.id
+            if persist_position:
+                self._book.position = chapter.id
             self.emit_event_main_thread("chapter-changed", self._book)
 
     @staticmethod
@@ -554,7 +564,7 @@ class Player(EventSender):
 
         return chapter.file
 
-    def _rewind_in_book(self):
+    def _rewind_in_book(self, persist_position: bool = True):
         if not self._book:
             log.error("Rewind in book not possible because no book is loaded.")
             reporter.error("player", "Rewind in book not possible because no book is loaded.")
@@ -569,7 +579,7 @@ class Player(EventSender):
             self._gst_player.position = current_position - rewind_nanoseconds
         elif chapter_number > 0:
             previous_chapter = self._book.chapters[chapter_number - 1]
-            self._load_chapter(previous_chapter)
+            self._load_chapter(previous_chapter, persist_position=persist_position)
             self._gst_player.position = previous_chapter.end_position + (
                 current_position_relative - rewind_nanoseconds
             )
@@ -599,9 +609,9 @@ class Player(EventSender):
         else:
             self._next_chapter()
 
-    def _rewind_feature(self):
+    def _rewind_feature(self, persist_position: bool = True):
         if self._app_settings.replay:
-            self._rewind_in_book()
+            self._rewind_in_book(persist_position=persist_position)
             self._emit_tick()
 
     def _next_chapter(self):
@@ -623,6 +633,24 @@ class Player(EventSender):
             chapter = self._book.chapters[index_current_chapter + 1]
             chapter.position = chapter.start_position
             self.play_pause_chapter(self._book, chapter)
+
+    def _advance_chapter_without_playback(self):
+        if not self._book:
+            log.info("Cannot advance chapter because no book reference is stored.")
+            return
+
+        index_current_chapter = self._book.chapters.index(self._book.current_chapter)
+        self._book.current_chapter.position = self._book.current_chapter.start_position
+
+        if len(self._book.chapters) <= index_current_chapter + 1:
+            log.info("Reached the end of the book while paused, stopping playback.")
+            self._stop_playback()
+            self.emit_event_main_thread("fadeout-finished")
+            return
+
+        chapter = self._book.chapters[index_current_chapter + 1]
+        chapter.position = chapter.start_position
+        self._load_chapter(chapter)
 
     def _previous_chapter(self):
         if not self._book:
@@ -653,19 +681,21 @@ class Player(EventSender):
             log.info("Reloading current book")
             last_book = self._library.last_played_book
             if last_book:
-                self._continue_book(last_book)
+                self._continue_book(last_book, persist_position=False)
                 # we need to tell everybody the new book object
                 # it represents the same book but after a scan the old objects do get destroyed
                 self.emit_event_main_thread("chapter-changed", self._book)
 
     def _on_gst_player_event(self, event: str, message):
         if event == "file-finished":
-            if self._play_next_chapter:
-                self._next_chapter()
-            else:
+            if not self._play_next_chapter:
                 self._stop_playback()
                 self.emit_event_main_thread("fadeout-finished")
                 self._play_next_chapter = True
+            elif self._gst_player.resume_state == Gst.State.PLAYING:
+                self._next_chapter()
+            else:
+                self._advance_chapter_without_playback()
         elif event == "resource-not-found":
             self._handle_file_not_found()
         elif event == "state" and message == Gst.State.PLAYING:

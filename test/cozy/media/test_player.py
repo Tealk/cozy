@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, PropertyMock, call
+from unittest.mock import MagicMock, PropertyMock, call, patch
 
 import inject
 import pytest
@@ -12,13 +12,14 @@ from cozy.settings import ApplicationSettings
 
 @pytest.fixture(autouse=True)
 def setup_inject(peewee_database):
-    inject.clear_and_configure(lambda binder: binder
-                               .bind(SqliteDatabase, peewee_database)
-                               .bind_to_constructor("FilesystemMonitor", MagicMock())
-                               .bind_to_constructor(GstPlayer, MagicMock())
-                               .bind_to_constructor(ApplicationSettings, MagicMock())
-                               .bind_to_constructor(Library, lambda: Library())
-                               .bind_to_constructor(Settings, lambda: Settings()))
+    inject.clear_and_configure(
+        lambda binder: binder.bind(SqliteDatabase, peewee_database)
+        .bind_to_constructor("FilesystemMonitor", MagicMock())
+        .bind_to_constructor(GstPlayer, MagicMock())
+        .bind_to_constructor(ApplicationSettings, MagicMock())
+        .bind_to_constructor(Library, lambda: Library())
+        .bind_to_constructor(Settings, lambda: Settings())
+    )
 
     yield
     inject.clear()
@@ -104,7 +105,7 @@ def test_loading_new_chapter_emits_changed_event(mocker):
     player._book = book
     player._load_chapter(book.chapters[1])
 
-    spy.assert_has_calls(calls=[call('chapter-changed', book)])
+    spy.assert_has_calls(calls=[call("chapter-changed", book)])
 
 
 def test_emit_tick_does_not_emit_tick_when_nothing_is_loaded(mocker):
@@ -126,7 +127,7 @@ def test_emit_tick_does_emit_tick_on_startup_when_last_book_is_loaded(mocker):
     spy = mocker.spy(player, "emit_event_main_thread")
     player._emit_tick()
 
-    spy.assert_has_calls(calls=[call('position', player.loaded_chapter.position)])
+    spy.assert_has_calls(calls=[call("position", player.loaded_chapter.position)])
 
 
 def test_rewind_in_book_does_not_rewind_if_no_book_is_loaded(mocker):
@@ -157,7 +158,9 @@ def test_load_book_does_not_load_book_if_it_is_none(mocker):
     assert player.loaded_book is None
 
 
-def test_play_pause_chapter_does_not_trigger_chapter_or_book_reload_when_book_has_been_played_before(mocker):
+def test_play_pause_chapter_does_not_trigger_chapter_or_book_reload_when_book_has_been_played_before(
+    mocker,
+):
     from cozy.media.player import Player
 
     mocker.patch("cozy.media.player.Player._load_last_book")
@@ -211,9 +214,194 @@ def test_should_jump_to_chapter_position_returns_false_for_less_than_one_second_
 
     mocker.patch("cozy.media.player.Player._load_last_book")
     mock = mocker.patch("cozy.media.player.Player.position", new_callable=PropertyMock)
-    mock.return_value = 10 ** 9
+    mock.return_value = 10**9
     player = Player()
 
-    jump = player._should_jump_to_chapter_position(1.9 * 10 ** 9)
+    jump = player._should_jump_to_chapter_position(1.9 * 10**9)
 
     assert not jump
+
+
+def _buffering_message(percent: int):
+    from gi.repository import Gst
+
+    message = MagicMock()
+    message.type = Gst.MessageType.BUFFERING
+    message.parse_buffering.return_value = percent
+
+    return message
+
+
+def _gst_player_double(state=None):
+    from gi.repository import Gst
+
+    from cozy.media.player import GstPlayer
+
+    player = GstPlayer.__new__(GstPlayer)
+    player._listeners = []
+    player._player = MagicMock()
+    player._player.get_state.return_value = (None, state or Gst.State.READY, None)
+    player._resume_state = Gst.State.PAUSED
+
+    return player
+
+
+def test_buffering_does_not_start_playback_when_playback_was_not_requested():
+    from gi.repository import Gst
+
+    player = _gst_player_double()
+
+    player._on_gst_message(MagicMock(), _buffering_message(100))
+
+    player._player.set_state.assert_called_once_with(Gst.State.PAUSED)
+
+
+def test_buffering_pauses_while_buffering_is_incomplete():
+    from gi.repository import Gst
+
+    player = _gst_player_double()
+    player._resume_state = Gst.State.PLAYING
+
+    player._on_gst_message(MagicMock(), _buffering_message(42))
+
+    player._player.set_state.assert_called_once_with(Gst.State.PAUSED)
+
+
+def test_buffering_resumes_playback_after_play_was_requested():
+    from gi.repository import Gst
+
+    player = _gst_player_double(Gst.State.PAUSED)
+    player.play()
+
+    assert player.resume_state == Gst.State.PLAYING
+
+    player._player.set_state.reset_mock()
+    player._on_gst_message(MagicMock(), _buffering_message(100))
+
+    player._player.set_state.assert_called_once_with(Gst.State.PLAYING)
+
+
+def test_pause_keeps_buffering_from_resuming_playback():
+    from gi.repository import Gst
+
+    player = _gst_player_double(Gst.State.PLAYING)
+    player._resume_state = Gst.State.PLAYING
+    player.pause()
+
+    assert player.resume_state == Gst.State.PAUSED
+
+    player._player.set_state.reset_mock()
+    player._on_gst_message(MagicMock(), _buffering_message(100))
+
+    player._player.set_state.assert_called_once_with(Gst.State.PAUSED)
+
+
+def test_load_file_resets_playback_intent():
+    from gi.repository import Gst
+
+    player = _gst_player_double()
+    player._resume_state = Gst.State.PLAYING
+
+    with patch("cozy.media.player.Path.exists", return_value=True):
+        player.load_file("/tmp/audiobook.mp3")
+
+    assert player.resume_state == Gst.State.PAUSED
+
+
+def test_file_finished_does_not_start_playback_when_paused(peewee_database):
+    from gi.repository import Gst
+
+    from cozy.media.player import Player
+
+    with patch("cozy.media.player.Player._load_last_book"):
+        player = Player()
+
+    library = inject.instance(Library)
+    book = library.books[1]
+    book.position = book.chapters[0].id
+    player._book = book
+    player._gst_player.resume_state = Gst.State.PAUSED
+
+    player._on_gst_player_event("file-finished", None)
+
+    player._gst_player.play.assert_not_called()
+    assert player.loaded_book == book
+    assert book.current_chapter == book.chapters[1]
+    assert book.position == book.chapters[1].id
+
+
+def test_file_finished_keeps_playing_next_chapter_during_playback(peewee_database):
+    from gi.repository import Gst
+
+    from cozy.media.player import Player
+
+    with patch("cozy.media.player.Player._load_last_book"):
+        player = Player()
+
+    library = inject.instance(Library)
+    book = library.books[1]
+    book.position = book.chapters[0].id
+    player._book = book
+    player._gst_player.resume_state = Gst.State.PLAYING
+
+    player._on_gst_player_event("file-finished", None)
+
+    player._gst_player.play.assert_called()
+    assert book.current_chapter == book.chapters[1]
+
+
+def test_file_finished_stops_playback_when_play_next_chapter_is_disabled(peewee_database):
+    from gi.repository import Gst
+
+    from cozy.media.player import Player
+
+    with patch("cozy.media.player.Player._load_last_book"):
+        player = Player()
+
+    library = inject.instance(Library)
+    book = library.books[1]
+    book.position = book.chapters[0].id
+    player._book = book
+    player._gst_player.resume_state = Gst.State.PLAYING
+    player.play_next_chapter = False
+
+    player._on_gst_player_event("file-finished", None)
+
+    player._gst_player.play.assert_not_called()
+    assert player.loaded_book is None
+    assert player.play_next_chapter is True
+
+
+def test_loading_finished_book_on_startup_keeps_finished_state(peewee_database):
+    from cozy.media.player import Player
+
+    with patch("cozy.media.player.Player._rewind_in_book"):
+        library = inject.instance(Library)
+        book = library.books[2]
+        book.position = -1
+        library.last_played_book = book
+
+        player = Player()
+
+        assert player.loaded_book == book
+        assert player.loaded_chapter == book.chapters[-1]
+        assert book.position == -1
+
+
+def test_playing_finished_book_keeps_finished_state(peewee_database):
+    from gi.repository import Gst
+
+    from cozy.media.player import Player
+
+    with patch("cozy.media.player.Player._rewind_in_book"):
+        library = inject.instance(Library)
+        book = library.books[2]
+        book.position = -1
+        library.last_played_book = book
+        player = Player()
+
+    player._gst_player.state = Gst.State.PAUSED
+    player.play_pause_book(book)
+
+    player._gst_player.play.assert_called()
+    assert book.position == -1

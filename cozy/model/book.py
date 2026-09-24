@@ -416,6 +416,9 @@ class Book(Observable, EventSender):
 
     @property
     def current_chapter(self):
+        if self.position == -1:
+            return self.chapters[-1]
+
         return next(
             (chapter for chapter in self.chapters if chapter.id == self.position), self.chapters[0]
         )

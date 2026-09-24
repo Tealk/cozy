@@ -241,6 +241,16 @@ def test_current_track_is_actually_current_track(peewee_database):
     assert book.current_chapter.id == BookDB.get_by_id(9).position
 
 
+def test_current_chapter_of_finished_book_is_the_last_chapter(peewee_database):
+    from cozy.db.book import Book as BookDB
+    from cozy.model.book import Book
+
+    book = Book(peewee_database, BookDB.get(9))
+    book.position = -1
+
+    assert book.current_chapter == book.chapters[-1]
+
+
 def test_try_to_init_empty_book_should_throw_exception(peewee_database):
     from cozy.db.book import Book as BookDB
     from cozy.model.book import Book, BookIsEmpty
