@@ -1,3 +1,4 @@
+import json
 import logging
 from contextlib import suppress
 
@@ -11,6 +12,7 @@ from cozy.db.collation import collate_natural
 from cozy.db.track import Track as TrackModel
 from cozy.db.track_to_file import TrackToFile
 from cozy.model.chapter import Chapter
+from cozy.control import time_format
 from cozy.model.settings import Settings
 from cozy.model.track import Track, TrackInconsistentData
 from cozy.settings import ApplicationSettings
@@ -20,6 +22,85 @@ log = logging.getLogger("BookModel")
 
 class BookIsEmpty(Exception):
     pass
+
+
+KNOWN_METADATA_KEYS = frozenset(
+    {
+        "title",
+        "titleIgnorePrefix",
+        "authorName",
+        "authorNameLF",
+        "narratorName",
+        "narratorNameLF",
+        "seriesName",
+        "series",
+        "seriesPart",
+        "publishedYear",
+        "publisher",
+        "description",
+        "language",
+        "isbn",
+        "asin",
+    }
+)
+
+
+def _humanize_metadata_key(key: str) -> str:
+    special = {
+        "authorNameLF": _("Author (sorted)"),
+        "narratorNameLF": _("Narrator (sorted)"),
+        "titleIgnorePrefix": _("Title without prefix"),
+    }
+
+    if key in special:
+        return special[key]
+
+    return key.replace("_", " ").strip().capitalize()
+
+
+def _metadata_value_to_text(value) -> str:
+    if value is None or value == "":
+        return ""
+
+    if isinstance(value, bool):
+        return _("Yes") if value else _("No")
+
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_metadata_value_to_text(entry) for entry in value)
+
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+    return str(value)
+
+
+def _split_series_name(value: str) -> tuple[str, float | None]:
+    text = value.strip()
+
+    if "#" not in text:
+        return text, None
+
+    name, _, raw_part = text.rpartition("#")
+    name = name.strip()
+    if not name:
+        return text, None
+
+    part_text = raw_part.strip()
+    try:
+        return name, float(part_text)
+    except ValueError:
+        leading = part_text.split("-")[0].strip()
+        try:
+            return name, float(leading)
+        except ValueError:
+            return name, None
+
+
+def _format_series_part(part: float) -> str:
+    if part and part.is_integer():
+        return str(int(part))
+
+    return f"{part:g}"
 
 
 class Book(Observable, EventSender):
@@ -118,6 +199,175 @@ class Book(Observable, EventSender):
     def cover(self, new_cover: bytes):
         self._db_object.cover = new_cover
         self._db_object.save(only=self._db_object.dirty_fields)
+
+    @property
+    def series(self):
+        return self._db_object.series or ""
+
+    @series.setter
+    def series(self, new_series: str):
+        self._db_object.series = new_series or None
+        self._db_object.save(only=self._db_object.dirty_fields)
+
+    @property
+    def series_part(self):
+        return self._db_object.series_part
+
+    @property
+    def series_entries(self) -> list[tuple[str, float | None]]:
+        if not self.series:
+            return []
+
+        entries: list[tuple[str, float | None]] = []
+        positions: dict[str, int] = {}
+
+        for index, raw_name in enumerate(self.series.split(",")):
+            name, embedded_part = _split_series_name(raw_name)
+            if not name:
+                continue
+
+            part = embedded_part
+            if part is None and index == 0:
+                part = self.series_part
+
+            if name in positions:
+                position = positions[name]
+                if entries[position][1] is None and part is not None:
+                    entries[position] = (name, part)
+                continue
+
+            positions[name] = len(entries)
+            entries.append((name, part))
+
+        return entries
+
+    @property
+    def series_text(self) -> str:
+        if not self.series:
+            return ""
+
+        order: list[str] = []
+        parts: dict[str, float | None] = {}
+        labels: dict[str, str] = {}
+
+        for segment in self.series.split(","):
+            raw = segment.strip()
+            if not raw:
+                continue
+
+            name, embedded_part = _split_series_name(raw)
+            if not name:
+                continue
+
+            if name not in parts:
+                order.append(name)
+                parts[name] = embedded_part
+                labels[name] = raw
+            elif parts[name] is None and embedded_part is not None:
+                parts[name] = embedded_part
+                labels[name] = raw
+
+        if not order:
+            return ""
+
+        if self.series_part is not None and parts[order[0]] is None:
+            parts[order[0]] = self.series_part
+
+        texts = []
+        for name in order:
+            label = labels[name]
+            if parts[name] is None or "#" in label:
+                texts.append(label)
+            else:
+                texts.append(f"{name} #{_format_series_part(parts[name])}")
+
+        return ", ".join(texts)
+
+    def series_part_for(self, series: str) -> float | None:
+        for name, part in self.series_entries:
+            if name == series:
+                return part
+
+        return None
+
+    @property
+    def description(self):
+        return self._db_object.description or ""
+
+    @property
+    def publisher(self):
+        return self._db_object.publisher or ""
+
+    @property
+    def published_year(self):
+        return self._db_object.published_year
+
+    @property
+    def language(self):
+        return self._db_object.language or ""
+
+    @property
+    def asin(self):
+        return self._db_object.asin or ""
+
+    @property
+    def metadata(self) -> dict:
+        if not self._db_object.metadata_json:
+            return {}
+
+        try:
+            data = json.loads(self._db_object.metadata_json)
+        except (TypeError, ValueError):
+            return {}
+
+        return data if isinstance(data, dict) else {}
+
+    @property
+    def extra_metadata(self) -> list[tuple[str, str]]:
+        extras = []
+        for key, value in self.metadata.items():
+            if key in KNOWN_METADATA_KEYS:
+                continue
+
+            text = _metadata_value_to_text(value)
+            if not text:
+                continue
+
+            extras.append((_humanize_metadata_key(key), text))
+
+        return extras
+
+    @property
+    def status_text(self) -> str:
+        if self.position == -1:
+            return _("Finished")
+
+        if self.position == 0 or self.progress <= 0:
+            return _("Not started")
+
+        percent = int(self.progress / self.duration * 100) if self.duration else 0
+        return _("{percent} % · {progress} of {total}").format(
+            percent=percent,
+            progress=time_format.ns_to_human_readable(self.progress),
+            total=time_format.ns_to_human_readable(self.duration),
+        )
+
+    @property
+    def has_status(self) -> bool:
+        return self.position != 0 or self.position == -1
+
+    @property
+    def has_details(self) -> bool:
+        return bool(
+            self.series
+            or self.description
+            or self.publisher
+            or self.published_year
+            or self.language
+            or self.asin
+            or self.extra_metadata
+            or self.has_status
+        )
 
     @property
     def playback_speed(self):

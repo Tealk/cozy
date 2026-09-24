@@ -18,6 +18,8 @@ from cozy.report import reporter
 
 log = logging.getLogger("db")
 
+logging.getLogger("peewee").setLevel(logging.INFO)
+
 _db = get_sqlite_database()
 
 

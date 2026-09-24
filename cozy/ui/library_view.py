@@ -9,6 +9,7 @@ from cozy.view_model.library_view_model import LibraryViewMode, LibraryViewModel
 
 READER_PAGE = "reader"
 AUTHOR_PAGE = "author"
+SERIES_PAGE = "series"
 RECENT_PAGE = "recent"
 MAIN_BOOK_PAGE = "main"
 WELCOME_PAGE = "welcome"
@@ -32,6 +33,7 @@ class LibraryView:
         self.populate_book_box()
         self.populate_author()
         self.populate_reader()
+        self.populate_series()
 
         self._on_library_view_mode_changed()
 
@@ -44,6 +46,7 @@ class LibraryView:
         self._filter_stack_revealer: Gtk.Revealer = self._builder.get_object("sort_stack_revealer")
         self._author_box: FilterListBox = self._builder.get_object("author_box")
         self._reader_box: FilterListBox = self._builder.get_object("reader_box")
+        self._series_box: FilterListBox = self._builder.get_object("series_box")
         self._book_stack: Gtk.Stack = self._builder.get_object("book_stack")
 
     def _connect_ui_elements(self):
@@ -59,11 +62,14 @@ class LibraryView:
         self._reader_box.connect("row-activated", self._on_filter_row_activated)
         self._author_box.connect("row-selected", self._on_filter_row_activated)
         self._reader_box.connect("row-selected", self._on_filter_row_activated)
+        self._series_box.connect("row-activated", self._on_filter_row_activated)
+        self._series_box.connect("row-selected", self._on_filter_row_activated)
 
     def _connect_view_model(self):
         self._view_model.bind_to("library_view_mode", self._on_library_view_mode_changed)
         self._view_model.bind_to("authors", self.populate_author)
         self._view_model.bind_to("readers", self.populate_reader)
+        self._view_model.bind_to("series", self.populate_series)
         self._view_model.bind_to("books", self.populate_book_box)
         self._view_model.bind_to("books-filter", self._book_box.invalidate_filter)
         self._view_model.bind_to("books-filter", self._book_box.invalidate_sort)
@@ -82,6 +88,8 @@ class LibraryView:
             view_mode = LibraryViewMode.AUTHOR
         elif page == READER_PAGE:
             view_mode = LibraryViewMode.READER
+        elif page == SERIES_PAGE:
+            view_mode = LibraryViewMode.SERIES
 
         self._view_model.library_view_mode = view_mode
 
@@ -92,6 +100,7 @@ class LibraryView:
 
         for book in self._view_model.books:
             book_card = BookCard(book)
+            book_card.set_series_text(self._view_model.series_label_for(book))
             book_card.connect("play-pause-clicked", self._play_book_clicked)
             book_card.connect("open-book-overview", self._open_book_overview_clicked)
             self._book_box.append(book_card)
@@ -102,9 +111,17 @@ class LibraryView:
     def populate_reader(self):
         self._reader_box.populate(self._view_model.readers)
 
+    def populate_series(self):
+        self._series_box.populate(self._view_model.series)
+
     def _on_library_view_mode_changed(self):
         self.refresh_filters()
+        self._populate_series_labels()
         self._navigation_view.pop_to_tag("main")
+
+    def _populate_series_labels(self):
+        for child in self._book_box:
+            child.set_series_text(self._view_model.series_label_for(child.book))
 
     def refresh_filters(self):
         visible_child_name = None
@@ -127,6 +144,9 @@ class LibraryView:
         elif view_mode == LibraryViewMode.READER:
             visible_child_name = READER_PAGE
             active_filter_box = self._reader_box
+        elif view_mode == LibraryViewMode.SERIES:
+            visible_child_name = SERIES_PAGE
+            active_filter_box = self._series_box
 
         # https://stackoverflow.com/questions/22178524/gtk-named-stack-childs/22182843#22182843
         self._main_stack.props.visible_child_name = main_view_page
@@ -159,6 +179,8 @@ class LibraryView:
             self._author_box.select_row_with_content(self._view_model.selected_filter)
         elif self._view_model.library_view_mode == LibraryViewMode.READER:
             self._reader_box.select_row_with_content(self._view_model.selected_filter)
+        elif self._view_model.library_view_mode == LibraryViewMode.SERIES:
+            self._series_box.select_row_with_content(self._view_model.selected_filter)
 
     def _play_book_clicked(self, _, book):
         self._view_model.play_book(book)

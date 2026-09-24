@@ -55,8 +55,10 @@ class BookCard(Gtk.FlowBoxChild):
 
     title = GObject.Property(type=str, default=_("Unknown"))
     author = GObject.Property(type=str, default=_("Unknown"))
+    series = GObject.Property(type=str, default="")
 
     artwork: Gtk.Picture = Gtk.Template.Child()
+    series_label: Gtk.Label = Gtk.Template.Child()
     fallback_icon: Gtk.Image = Gtk.Template.Child()
     stack: Gtk.Stack = Gtk.Template.Child()
     button: Gtk.Stack = Gtk.Template.Child()
@@ -83,6 +85,7 @@ class BookCard(Gtk.FlowBoxChild):
         self.book = book
         self.title = book.name
         self.author = book.author
+        self.set_series_text("")
 
         paintable = self.artwork_cache.get_cover_paintable(
             book, self.get_scale_factor(), ALBUM_ART_SIZE
@@ -104,6 +107,10 @@ class BookCard(Gtk.FlowBoxChild):
         self.book.bind_to("position", self._on_position_updated)
 
         self._setup_menu()
+
+    def set_series_text(self, text: str) -> None:
+        self.series = text
+        self.series_label.set_visible(bool(text))
 
     def _setup_menu(self):
         remove_recents_item = Gio.MenuItem.new(_("Remove from Recents"))

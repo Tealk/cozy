@@ -23,11 +23,14 @@ from cozy.view_model.storages_view_model import StoragesViewModel
 
 log = logging.getLogger("library_view_model")
 
+NO_SERIES = _("No series")
+
 
 class LibraryViewMode(Enum):
     CURRENT = auto()
     AUTHOR = auto()
     READER = auto()
+    SERIES = auto()
 
 
 class LibraryViewModel(Observable, EventSender):
@@ -109,6 +112,30 @@ class LibraryViewModel(Observable, EventSender):
         return sorted(split_strings_to_set(readers))
 
     @property
+    def series(self):
+        is_book_online = self._fs_monitor.get_book_online
+        show_offline_books = not self._application_settings.hide_offline
+
+        names = set()
+        has_books_without_series = False
+
+        for book in self._model.books:
+            if not (is_book_online(book) or show_offline_books or book.downloaded):
+                continue
+
+            entries = book.series_entries
+            if entries:
+                names.update(name for name, _ in entries)
+            else:
+                has_books_without_series = True
+
+        result = sorted(names, key=str.lower)
+        if has_books_without_series:
+            result.append(NO_SERIES)
+
+        return result
+
+    @property
     def current_book_in_playback(self) -> Optional[Book]:
         return self._player.loaded_book
 
@@ -173,12 +200,57 @@ class LibraryViewModel(Observable, EventSender):
             return self.selected_filter in book.author
         elif self.library_view_mode == LibraryViewMode.READER:
             return self.selected_filter in book.reader
+        elif self.library_view_mode == LibraryViewMode.SERIES:
+            if self.selected_filter == NO_SERIES:
+                return not book.series
+
+            return any(name == self.selected_filter for name, _ in book.series_entries)
 
     def display_book_sort(self, book_element1, book_element2):
-        if self._library_view_mode == LibraryViewMode.CURRENT:
+        if self.library_view_mode == LibraryViewMode.CURRENT:
             return book_element1.book.last_played < book_element2.book.last_played
-        else:
-            return book_element1.book.name.lower() > book_element2.book.name.lower()
+
+        if self.library_view_mode == LibraryViewMode.SERIES:
+            first, second = book_element1.book, book_element2.book
+            first_name, first_part = self._sort_series(first)
+            second_name, second_part = self._sort_series(second)
+
+            if first_name != second_name:
+                return first_name > second_name
+
+            if first_part != second_part:
+                return first_part > second_part
+
+        return book_element1.book.name.lower() > book_element2.book.name.lower()
+
+    def series_label_for(self, book: Book) -> str:
+        if self.library_view_mode != LibraryViewMode.SERIES:
+            return ""
+
+        if self.selected_filter in (_("All"), NO_SERIES):
+            return book.series_text
+
+        for name, part in book.series_entries:
+            if name == self.selected_filter:
+                if part is None:
+                    return name
+
+                return f"{name} #{part:g}"
+
+        return ""
+
+    def _sort_series(self, book: Book) -> tuple[str, float]:
+        selected = self.selected_filter
+
+        for name, part in book.series_entries:
+            if selected not in (_("All"), NO_SERIES) and name == selected:
+                return name, part if part is not None else 0.0
+
+        if book.series_entries:
+            name, part = book.series_entries[0]
+            return name, part if part is not None else 0.0
+
+        return "", 0.0
 
     def open_library(self):
         self._notify("library_view_mode")
@@ -187,6 +259,7 @@ class LibraryViewModel(Observable, EventSender):
         self._model.invalidate()
         self._notify("authors")
         self._notify("readers")
+        self._notify("series")
         self._notify("books")
         self._notify("books-filter")
 

@@ -123,6 +123,34 @@ Adw.ApplicationWindow app_window {
                             ]
                           };
                         }
+
+                        Adw.ViewStackPage {
+                          name: 'series';
+                          title: _("Series");
+                          icon-name: 'cozy.book-open-symbolic';
+
+                          child: ScrolledWindow sort_series_scroller {
+                            focusable: true;
+                            hscrollbar-policy: never;
+                            has-frame: true;
+
+                            child: Viewport sort_series_viewport {
+                              $FilterListBox series_box {
+                                accessibility {
+                                  label: _("List of series");
+                                }
+
+                                styles [
+                                  "navigation-sidebar",
+                                ]
+                              }
+                            };
+
+                            styles [
+                              "no_frame",
+                            ]
+                          };
+                        }
                       };
 
                       content: Stack book_stack {

@@ -189,36 +189,124 @@ template $BookDetail: Adw.NavigationPage {
               }
             }
 
-            Adw.Clamp {
-              maximum-size: 800;
+            StackSwitcher content_switcher {
+              stack: content_stack;
+              halign: center;
+              margin-start: 18;
+              margin-end: 18;
+              margin-top: 12;
+              visible: false;
+            }
+
+            Stack content_stack {
               vexpand: true;
 
-              Stack chapters_stack {
-                margin-start: 18;
-                margin-end: 18;
-                margin-top: 12;
-                margin-bottom: 24;
+              StackPage {
+                name: 'details';
+                title: _("Details");
 
-                StackPage {
-                  name: 'chapters_wrapper';
+                child: Adw.Clamp {
+                  maximum-size: 800;
+                  vexpand: true;
 
-                  child: Box chapter_list_container {
+                  child: Box details_box {
                     orientation: vertical;
-                    spacing: 18;
-                  };
-                }
+                    spacing: 12;
+                    margin-start: 18;
+                    margin-end: 18;
+                    margin-top: 12;
+                    margin-bottom: 24;
 
-                StackPage {
-                  name: 'chapters_loader';
+                    Label description_label {
+                      xalign: 0;
+                      wrap: true;
+                      wrap-mode: word_char;
+                      visible: false;
 
-                  child: Adw.StatusPage _loading_status_page {
-                    paintable: Adw.SpinnerPaintable {
-                      widget: _loading_status_page;
-                    };
-                    title: _("Loading…");
+                      styles [
+                        "body",
+                      ]
+                    }
+
+                    ListBox details_list {
+                      selection-mode: none;
+                      visible: false;
+
+                      styles [
+                        "boxed-list",
+                      ]
+
+                      Adw.ActionRow status_row {
+                        title: _("Status");
+                        visible: false;
+                      }
+
+                      Adw.ActionRow series_row {
+                        title: _("Series");
+                        visible: false;
+                      }
+
+                      Adw.ActionRow publisher_row {
+                        title: _("Publisher");
+                        visible: false;
+                      }
+
+                      Adw.ActionRow published_year_row {
+                        title: _("Published");
+                        visible: false;
+                      }
+
+                      Adw.ActionRow language_row {
+                        title: _("Language");
+                        visible: false;
+                      }
+
+                      Adw.ActionRow asin_row {
+                        title: _("ISBN / ASIN");
+                        visible: false;
+                      }
+                    }
+
                   };
-                }
+                };
               }
+              StackPage {
+                name: 'chapters';
+                title: _("Chapters");
+
+                child: Adw.Clamp {
+                  maximum-size: 800;
+                  vexpand: true;
+
+                  child: Stack chapters_stack {
+                    margin-start: 18;
+                    margin-end: 18;
+                    margin-top: 12;
+                    margin-bottom: 24;
+
+                    StackPage {
+                      name: 'chapters_wrapper';
+
+                      child: Box chapter_list_container {
+                        orientation: vertical;
+                        spacing: 18;
+                      };
+                    }
+
+                    StackPage {
+                      name: 'chapters_loader';
+
+                      child: Adw.StatusPage _loading_status_page {
+                        paintable: Adw.SpinnerPaintable {
+                          widget: _loading_status_page;
+                        };
+                        title: _("Loading…");
+                      };
+                    }
+                  };
+                };
+              }
+
             }
           };
         }

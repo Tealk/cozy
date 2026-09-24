@@ -286,3 +286,61 @@ def test_raises_when_all_attempts_fail_with_request_exception(no_sleep):
 
     assert session.calls == 3
     assert len(no_sleep) == 2
+
+
+def test_get_progress_maps_library_items():
+    session = FakeSession(
+        [
+            FakeResponse(
+                200,
+                {
+                    "mediaProgress": [
+                        {"libraryItemId": "li_1", "currentTime": 10, "duration": 100},
+                        {"libraryItemId": "li_2", "currentTime": 50, "duration": 100},
+                    ]
+                },
+            )
+        ]
+    )
+    client = make_client(session)
+
+    progress = client.get_progress()
+
+    assert set(progress) == {"li_1", "li_2"}
+    assert progress["li_2"]["currentTime"] == 50
+    assert session.requests[0][1].endswith("/api/me/progress")
+
+
+def test_get_progress_prefers_book_entries_over_episodes():
+    session = FakeSession(
+        [
+            FakeResponse(
+                200,
+                {
+                    "mediaProgress": [
+                        {"libraryItemId": "li_1", "episodeId": "ep_1", "currentTime": 5},
+                        {"libraryItemId": "li_1", "currentTime": 42},
+                    ]
+                },
+            )
+        ]
+    )
+    client = make_client(session)
+
+    assert client.get_progress()["li_1"]["currentTime"] == 42
+
+
+def test_get_progress_handles_alternative_payload():
+    session = FakeSession(
+        [FakeResponse(200, {"libraryItemsInProgress": [{"itemId": "li_3", "currentTime": 7}]})]
+    )
+    client = make_client(session)
+
+    assert client.get_progress()["li_3"]["currentTime"] == 7
+
+
+def test_get_progress_handles_empty_payload():
+    session = FakeSession([FakeResponse(200, {})])
+    client = make_client(session)
+
+    assert client.get_progress() == {}

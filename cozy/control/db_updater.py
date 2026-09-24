@@ -3,7 +3,7 @@ import os
 import shutil
 from datetime import datetime
 
-from peewee import BooleanField, FloatField, ForeignKeyField, IntegerField, fn
+from peewee import BooleanField, CharField, FloatField, ForeignKeyField, IntegerField, TextField, fn
 from playhouse.migrate import SqliteMigrator, migrate
 from playhouse.reflection import generate_models
 
@@ -266,6 +266,42 @@ def _update_db_12(db):
     Settings.update(version=12).execute()
 
 
+def _update_db_13(db):
+    log.info("Migrating to DB Version 13...")
+
+    migrator = SqliteMigrator(db)
+
+    migrate(
+        migrator.add_column("book", "series", CharField(null=True)),
+        migrator.add_column("book", "series_part", FloatField(null=True)),
+        migrator.add_column("book", "description", TextField(null=True)),
+        migrator.add_column("book", "publisher", CharField(null=True)),
+        migrator.add_column("book", "published_year", IntegerField(null=True)),
+        migrator.add_column("book", "language", CharField(null=True)),
+        migrator.add_column("book", "asin", CharField(null=True)),
+    )
+
+    db.stop()
+    db.start()
+
+    Settings.update(version=13).execute()
+
+
+def _update_db_14(db):
+    log.info("Migrating to DB Version 14...")
+
+    migrator = SqliteMigrator(db)
+
+    migrate(
+        migrator.add_column("book", "metadata_json", TextField(null=True)),
+    )
+
+    db.stop()
+    db.start()
+
+    Settings.update(version=14).execute()
+
+
 def update_db():
     db = get_sqlite_database()
     # First test for version 1
@@ -349,6 +385,34 @@ def update_db():
         backup_dir_name = _backup_db(db)
         try:
             _update_db_12(db)
+        except Exception as e:
+            log.error(e)
+            reporter.exception("db_updator", e)
+            db.stop()
+            _restore_db(backup_dir_name)
+
+            from cozy.ui.db_migration_failed_view import DBMigrationFailedView
+            DBMigrationFailedView().present()
+            exit(1)
+
+    if version < 13:
+        backup_dir_name = _backup_db(db)
+        try:
+            _update_db_13(db)
+        except Exception as e:
+            log.error(e)
+            reporter.exception("db_updator", e)
+            db.stop()
+            _restore_db(backup_dir_name)
+
+            from cozy.ui.db_migration_failed_view import DBMigrationFailedView
+            DBMigrationFailedView().present()
+            exit(1)
+
+    if version < 14:
+        backup_dir_name = _backup_db(db)
+        try:
+            _update_db_14(db)
         except Exception as e:
             log.error(e)
             reporter.exception("db_updator", e)

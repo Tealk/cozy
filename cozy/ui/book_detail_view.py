@@ -54,6 +54,17 @@ class BookDetailView(Adw.NavigationPage):
     download_progress_bar: Gtk.ProgressBar = Gtk.Template.Child()
     download_progress_label: Gtk.Label = Gtk.Template.Child()
 
+    content_switcher: Gtk.StackSwitcher = Gtk.Template.Child()
+    content_stack: Gtk.Stack = Gtk.Template.Child()
+    details_list: Gtk.ListBox = Gtk.Template.Child()
+    status_row: Adw.ActionRow = Gtk.Template.Child()
+    series_row: Adw.ActionRow = Gtk.Template.Child()
+    publisher_row: Adw.ActionRow = Gtk.Template.Child()
+    published_year_row: Adw.ActionRow = Gtk.Template.Child()
+    language_row: Adw.ActionRow = Gtk.Template.Child()
+    asin_row: Adw.ActionRow = Gtk.Template.Child()
+    description_label: Gtk.Label = Gtk.Template.Child()
+
     album_art: Gtk.Picture = Gtk.Template.Child()
     album_art_container: Gtk.Stack = Gtk.Template.Child()
     fallback_icon: Gtk.Image = Gtk.Template.Child()
@@ -83,6 +94,7 @@ class BookDetailView(Adw.NavigationPage):
 
         self._chapter_listboxes: list[ChaptersListBox] = []
         self._chapter_elements: list[ChapterElement] = []
+        self._extra_metadata_rows: list[Adw.ActionRow] = []
 
         self._connect_view_model()
         self._connect_widgets()
@@ -143,9 +155,62 @@ class BookDetailView(Adw.NavigationPage):
         self._set_cover_image(book)
         self._on_progress_changed()
         self._display_external_section()
+        self._display_details(book)
         self._setup_menu(book)
+        self._reset_content_tabs(book)
+
+    def _reset_content_tabs(self, book: Book):
+        self.content_stack.set_visible_child_name("details" if book.has_details else "chapters")
+
+    def _display_details(self, book: Book):
+        self.content_switcher.set_visible(book.has_details)
+
+        if not book.has_details:
+            return
+
+        self.status_row.set_subtitle(book.status_text)
+        self.status_row.set_visible(True)
+
+        rows = (
+            (self.series_row, book.series_text),
+            (self.publisher_row, book.publisher),
+            (self.published_year_row, str(book.published_year or "")),
+            (self.language_row, book.language),
+            (self.asin_row, book.asin),
+        )
+
+        for row, value in rows:
+            row.set_subtitle(value)
+            row.set_visible(bool(value))
+
+        self._display_extra_metadata(book)
+        self.details_list.set_visible(True)
+        self.description_label.set_label(book.description)
+        self.description_label.set_visible(bool(book.description))
+
+    def _display_extra_metadata(self, book: Book):
+        for row in self._extra_metadata_rows:
+            self.details_list.remove(row)
+
+        self._extra_metadata_rows = []
+        last_row = self.asin_row
+
+        for label, value in book.extra_metadata:
+            row = Adw.ActionRow(title=label, subtitle=value)
+            self.details_list.append(row)
+            self._extra_metadata_rows.append(row)
+            last_row = row
+
+        if self._extra_metadata_rows:
+            self.details_list.remove(last_row)
+            self.details_list.append(last_row)
 
     def _setup_menu(self, book):
+        self.menu_section.remove_all()
+
+        if self._view_model.is_book_remote:
+            return
+
         open_in_files_item = Gio.MenuItem.new(_("Open in Files"))
         remove_item = Gio.MenuItem.new(_("Remove from Library"))
 

@@ -59,8 +59,8 @@ class AbsViewModel(Observable, EventSender):
         self._notify("servers")
         return None
 
-    def sync(self, server: AudiobookshelfServer) -> None:
-        Thread(target=self._sync_background, args=(server.id,), name="AbsSyncThread").start()
+    def sync(self, server: AudiobookshelfServer, force: bool = False) -> None:
+        Thread(target=self._sync_background, args=(server.id, force), name="AbsSyncThread").start()
 
     def remove(self, server: AudiobookshelfServer) -> None:
         for mapping in AudiobookshelfBook.select().where(AudiobookshelfBook.server == server.id):
@@ -74,7 +74,7 @@ class AbsViewModel(Observable, EventSender):
 
         self._notify("servers")
 
-    def _sync_background(self, server_id: int) -> None:
+    def _sync_background(self, server_id: int, force: bool = False) -> None:
         server = AudiobookshelfServer.get_or_none(server_id)
         if server is None:
             return
@@ -82,15 +82,20 @@ class AbsViewModel(Observable, EventSender):
         token = secrets.get_server_token(server.id)
         client = AudiobookshelfClient(server.url, token=token)
 
+        def report_progress(value: float) -> None:
+            self.emit_event_main_thread("sync-progress", value)
+
         try:
-            result = AbsImporter(client, server).sync()
+            result = AbsImporter(client, server).sync(
+                progress_callback=report_progress, force=force
+            )
         except (AudiobookshelfError, requests.RequestException) as e:
             log.error("Sync failed for server %s: %s", server.url, e)
             self.emit_event_main_thread("sync-failed", str(e))
             return
 
         self._apply_offline_cache_changes(result)
-        self.emit_event_main_thread("sync-finished", (server, result))
+        self.emit_event_main_thread("sync-finished", (server, result, force))
         GLib.idle_add(self._library_view_model.refresh_books)
 
     def _apply_offline_cache_changes(self, result) -> None:

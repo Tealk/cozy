@@ -14,6 +14,7 @@ LIBRARY_ITEMS_PATH = "/api/libraries/{library_id}/items"
 ITEM_PATH = "/api/items/{item_id}"
 ITEM_COVER_PATH = "/api/items/{item_id}/cover"
 ME_PROGRESS_PATH = "/api/me/progress/{item_id}"
+ME_PROGRESS_BULK_PATH = "/api/me/progress"
 
 MAX_ATTEMPTS = 3
 RETRY_BACKOFF = (1.0, 2.0, 4.0)
@@ -80,6 +81,23 @@ class AudiobookshelfClient:
 
     def get_item(self, item_id: str) -> dict:
         return self._get_json(ITEM_PATH.format(item_id=item_id), expanded=1, include="progress")
+
+    def get_progress(self) -> dict[str, dict]:
+        data = self._get_json(ME_PROGRESS_BULK_PATH)
+        entries = data.get("mediaProgress") or data.get("libraryItemsInProgress") or []
+
+        progress = {}
+        for entry in entries:
+            item_id = entry.get("libraryItemId") or entry.get("itemId")
+            if not item_id:
+                continue
+
+            if entry.get("episodeId") and item_id in progress:
+                continue
+
+            progress[item_id] = entry
+
+        return progress
 
     def get_cover(self, item_id: str) -> Optional[bytes]:
         try:
